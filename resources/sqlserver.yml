@@ -1,0 +1,36 @@
+variables:
+  # Common variables used multiple places in the DAB definition.
+  gateway_name:
+    default: sqlserver01-gateway-pipeline
+  dest_catalog:
+    default: main
+  dest_schema:
+    default: sqlserver01
+
+resources:
+  pipelines:
+    gateway:
+      name: ${var.gateway_name}
+      gateway_definition:
+        connection_name: rebel
+        gateway_storage_catalog: main
+        gateway_storage_schema: sqlserver01
+        gateway_storage_name: sqlserver01-gateway-pipeline
+      catalog: main
+      target: sqlserver01
+      channel: PREVIEW
+
+    pipeline_sqlserver:
+      name: sqlserver-ingestion-pipeline
+      ingestion_definition:
+        ingestion_gateway_id: ${resources.pipelines.gateway.id}
+        objects:
+          - schema:
+              # Ingest all tables in the sqlserver01.dbo schema to main.dest_schema. The destination table name will be drivers, the same as it is on the source.
+              source_catalog: sqlserver01
+              source_schema: dbo
+              destination_catalog: main
+              destination_schema: sqlserver01
+      target: sqlserver01
+      catalog: main
+      channel: PREVIEW
