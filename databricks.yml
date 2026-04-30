@@ -18,7 +18,7 @@ targets:
   dev:
     mode: development
     variables:
-      catalog: <FILL_ME_IN>  # TODO: maintainer to fill in
-      notification_email: <FILL_ME_IN>  # TODO: maintainer to fill in
+      catalog: DEMO_DEV  # TODO: maintainer to fill in
+      notification_email: andy.eshun@axians.com  # TODO: maintainer to fill in
       sqlserver_connection_name: <FILL_ME_IN>  # TODO: maintainer to fill in
-      azure_storage_external_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/
+      azure_storage_external_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/source/
