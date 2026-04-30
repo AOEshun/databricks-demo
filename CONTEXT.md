@@ -46,13 +46,13 @@ Schema's zijn gebaseerd op de laag én de bronbron:
 ## 3. Volumes
 
 - **Één External Volume** op container-niveau, gekoppeld aan de Azure Storage Container
-- De parquet-bestanden staan plat in één `source/` map, met bestandsnamen die met `ORDER_HEADER_` of `ORDER_DETAIL_` beginnen
+- De parquet-bestanden staan plat in één `source/` map, met bestandsnamen die met `ORDER_HEADER` of `ORDER_DETAIL` beginnen
 - Routering naar de juiste doeltabel gebeurt via Auto Loader's `pathGlobFilter`, gestuurd door de `file_pattern` kolom in de control table
 
 ```
 /Volumes/demo_dev/staging_azurestorage/source/
-├── ORDER_HEADER_*.parquet
-├── ORDER_DETAIL_*.parquet
+├── ORDER_HEADER*.parquet
+├── ORDER_DETAIL*.parquet
 └── _checkpoints/        # Auto Loader checkpoints per target table
 ```
 
@@ -71,7 +71,7 @@ DEMO_DEV.CONFIG.pipeline_sources
 |---|---|---|---|
 | `source_system` | string | `azurestorage` | Welk bronsysteem |
 | `source_path` | string | `/Volumes/demo_dev/staging_azurestorage/source` | Pad naar de bronfolder |
-| `file_pattern` | string | `ORDER_HEADER_*.parquet` | Glob filter binnen de folder (per doeltabel) |
+| `file_pattern` | string | `ORDER_HEADER*.parquet` | Glob filter binnen de folder (per doeltabel) |
 | `target_schema` | string | `STAGING_AZURESTORAGE` | Doelschema |
 | `target_table` | string | `order_header` | Doeltabelnaam |
 | `file_format` | string | `parquet` | Bestandstype |
@@ -84,8 +84,8 @@ DEMO_DEV.CONFIG.pipeline_sources
 
 | source_system | source_path | file_pattern | target_table | load_type |
 |---|---|---|---|---|
-| `azurestorage` | `/Volumes/demo_dev/staging_azurestorage/source` | `ORDER_HEADER_*.parquet` | `order_header` | `full` |
-| `azurestorage` | `/Volumes/demo_dev/staging_azurestorage/source` | `ORDER_DETAIL_*.parquet` | `order_detail` | `full` |
+| `azurestorage` | `/Volumes/demo_dev/staging_azurestorage/source` | `ORDER_HEADER*.parquet` | `order_header` | `full` |
+| `azurestorage` | `/Volumes/demo_dev/staging_azurestorage/source` | `ORDER_DETAIL*.parquet` | `order_detail` | `full` |
 
 **Argumentatie:** De control table is een Delta-tabel en profiteert daarmee automatisch van Delta Time Travel, Unity Catalog Audit Logs en Lineage — zonder extra configuratie.
 
