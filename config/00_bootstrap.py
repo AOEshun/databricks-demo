@@ -18,15 +18,17 @@
 
 # Parameters & widgets
 dbutils.widgets.text("catalog", "DEMO_DEV", "Catalog")
+dbutils.widgets.text(
+    "azure_storage_external_location",
+    "",
+    "Azure Storage URL (abfss://...)",
+)
 
 catalog = dbutils.widgets.get("catalog")
-
-# Storage URL voor het parquet-bron-volume. Hardcoded omdat deze slice op één
-# dev workspace draait; latere slices (5 — test/prod stubs) parameteriseren dit.
-AZURE_STORAGE_URL = "abfss://sourcetables@tastybytessa.dfs.core.windows.net/"
+external_location = dbutils.widgets.get("azure_storage_external_location")
 
 print(f"Catalog            : {catalog}")
-print(f"Azure Storage URL  : {AZURE_STORAGE_URL}")
+print(f"External Location  : {external_location}")
 
 # COMMAND ----------
 
@@ -62,7 +64,7 @@ for schema in ["STAGING_AZURESTORAGE", "STAGING_SQLSERVER", "CONFIG"]:
 
 volume_sql = f"""
 CREATE EXTERNAL VOLUME IF NOT EXISTS {catalog}.STAGING_AZURESTORAGE.source
-  LOCATION '{AZURE_STORAGE_URL}'
+  LOCATION '{external_location}'
 """
 
 spark.sql(volume_sql)

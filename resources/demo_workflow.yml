@@ -14,6 +14,7 @@ resources:
             notebook_path: config/00_bootstrap.py
             base_parameters:
               catalog: ${var.catalog}
+              azure_storage_external_location: ${var.azure_storage_external_location}
 
         - task_key: ingest_azurestorage
           description: "Parquet-bestanden inladen via control table (full mode)"
