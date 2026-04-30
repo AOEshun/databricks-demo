@@ -1,0 +1,24 @@
+bundle:
+  name: databricks-demo
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog name (e.g. DEMO_DEV)
+  notification_email:
+    description: Recipient e-mail address for job-failure alerts
+  sqlserver_connection_name:
+    description: UC Connection name for the SQL Server source (used by resources/sqlserver.yml)
+  azure_storage_external_location:
+    description: UC External Location name wrapping the Azure Storage parquet container
+
+targets:
+  dev:
+    mode: development
+    variables:
+      catalog: DEMO_DEV  # TODO: maintainer to fill in
+      notification_email: andy.eshun@axians.com  # TODO: maintainer to fill in
+      sqlserver_connection_name: <FILL_ME_IN>  # TODO: maintainer to fill in
+      azure_storage_external_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/source/

@@ -1,0 +1,34 @@
+resources:
+  jobs:
+    demo_workflow:
+      name: demo-end-to-end-workflow
+
+      email_notifications:
+        on_failure:
+          - ${var.notification_email}
+
+      environments:
+        - environment_key: demo_env
+          spec:
+            client: "1"
+
+      tasks:
+        - task_key: bootstrap
+          description: "Catalog, schema's, volume en control table aanmaken (idempotent)"
+          environment_key: demo_env
+          notebook_task:
+            notebook_path: config/00_bootstrap.py
+            base_parameters:
+              catalog: ${var.catalog}
+              azure_storage_external_location: ${var.azure_storage_external_location}
+
+        - task_key: ingest_azurestorage
+          description: "Parquet-bestanden inladen via control table (full mode)"
+          depends_on:
+            - task_key: bootstrap
+          environment_key: demo_env
+          notebook_task:
+            notebook_path: staging/02_ingest_azurestorage.py
+            base_parameters:
+              catalog: ${var.catalog}
+              pipeline_run_id: "{{job.run_id}}"
