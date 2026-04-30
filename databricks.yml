@@ -18,7 +18,7 @@ targets:
   dev:
     mode: development
     variables:
-      catalog: DEMO_DEV  # TODO: maintainer to fill in
-      notification_email: placeholder@example.com  # TODO: maintainer to fill in
-      sqlserver_connection_name: placeholder-connection  # TODO: maintainer to fill in
-      azure_storage_external_location: placeholder-external-location  # TODO: maintainer to fill in
+      catalog: <FILL_ME_IN>  # TODO: maintainer to fill in
+      notification_email: <FILL_ME_IN>  # TODO: maintainer to fill in
+      sqlserver_connection_name: <FILL_ME_IN>  # TODO: maintainer to fill in
+      azure_storage_external_location: <FILL_ME_IN>  # TODO: maintainer to fill in
