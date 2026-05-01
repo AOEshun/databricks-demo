@@ -160,25 +160,27 @@ databricks-demo/
 │   ├── dlt_staging.yml                 # DLT pipeline definition
 │   └── demo_workflow.yml               # End-to-end Workflow (bootstrap → ingest → DLT → SQL Server)
 ├── config/
-│   └── 00_bootstrap.py                 # Catalog, schemas, volume én control table — alles in één
+│   └── 00_bootstrap.ipynb              # Catalog, schemas, volume én control table — alles in één
 ├── staging/
-│   ├── 02_ingest_azurestorage.py       # Parquet inladen via control table (Auto Loader)
+│   ├── 02_ingest_azurestorage.ipynb    # Parquet inladen via control table (Auto Loader)
 │   └── dlt/
-│       └── 04_staging_dlt_pipeline.py  # DLT versie van staging (Expectations + graph view)
+│       └── 04_staging_dlt_pipeline.ipynb  # DLT versie van staging (Expectations + graph view)
 ├── integration/
 │   └── (later uit te werken)
 ├── datamart/
 │   └── (later uit te werken)
 ├── demo_showcase/
-│   ├── delta_time_travel.py            # Delta Time Travel demo
-│   ├── audit_logs.py                   # Audit Logs demo
-│   └── lineage.py                      # Lineage demo
+│   ├── delta_time_travel.ipynb         # Delta Time Travel demo
+│   ├── audit_logs.ipynb                # Audit Logs demo
+│   └── lineage.ipynb                   # Lineage demo
 └── docs/
     ├── prerequisites.md                # Layer 1 admin setup (Access Connector, Storage Credential, etc.)
     └── demo_script.md                  # Handmatig demo-draaiboek met talking points en SQL snippets
 ```
 
-> **Opmerking:** Er is geen `03_ingest_sqlserver.py` notebook. SQL Server wordt volledig declaratief ingeladen via Lakeflow Connect (`resources/sqlserver.yml`). Er is ook geen `01_create_volumes.py`; volume-creatie zit in het bootstrap-notebook.
+> **Opmerking:** Er is geen `03_ingest_sqlserver.ipynb` notebook. SQL Server wordt volledig declaratief ingeladen via Lakeflow Connect (`resources/sqlserver.yml`). Er is ook geen `01_create_volumes.ipynb`; volume-creatie zit in het bootstrap-notebook.
+
+> **Notebook-formaat:** Databricks gebruikt sinds de recente platform-update standaard `.ipynb` (Jupyter-formaat) voor nieuwe notebooks in plaats van `.py` (source-formaat). Alle nieuwe notebooks in deze demo worden dus als `.ipynb` aangemaakt.
 
 ---
 
@@ -229,9 +231,9 @@ Live voor een klant demonstreren dat één UPDATE in de control table het gedrag
 1. **Layer 1 prerequisites** (eenmalig, handmatig) — Access Connector, Storage Credential, External Location, UC Connection voor SQL Server. Zie `docs/prerequisites.md`.
 2. Azure DevOps repo koppelen aan Databricks Repos
 3. `databricks.yml` opzetten met variabelen en drie targets (alleen `dev` echt gevuld)
-4. `config/00_bootstrap.py` — catalog, schemas, volume én control table aanmaken (idempotent)
-5. `staging/02_ingest_azurestorage.py` — parquet inladen via Auto Loader, gestuurd door de control table
-6. `resources/dlt_staging.yml` + `staging/dlt/04_staging_dlt_pipeline.py` — DLT pipeline met Expectations
+4. `config/00_bootstrap.ipynb` — catalog, schemas, volume én control table aanmaken (idempotent)
+5. `staging/02_ingest_azurestorage.ipynb` — parquet inladen via Auto Loader, gestuurd door de control table
+6. `resources/dlt_staging.yml` + `staging/dlt/04_staging_dlt_pipeline.ipynb` — DLT pipeline met Expectations
 7. `resources/sqlserver.yml` + `resources/sqlserver_job.yml` updaten — Lakeflow Connect richten op `DEMO_DEV.STAGING_SQLSERVER`, Job op dagelijks 04:00 UTC
 8. `resources/demo_workflow.yml` — end-to-end Workflow die alles aan elkaar knoopt
 9. `demo_showcase/` notebooks — Time Travel, Audit Logs, Lineage
