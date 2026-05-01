@@ -32,3 +32,10 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               pipeline_run_id: "{{job.run_id}}"
+
+        - task_key: dlt_staging
+          description: "DLT pipeline — Expectations + declaratieve graph view (parallel met ingest_azurestorage)"
+          depends_on:
+            - task_key: bootstrap
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.dlt_staging.id}
