@@ -17,7 +17,7 @@ resources:
           description: "Catalog, schema's, volume en control table aanmaken (idempotent)"
           environment_key: demo_env
           notebook_task:
-            notebook_path: config/00_bootstrap.py
+            notebook_path: config/00_bootstrap.ipynb
             base_parameters:
               catalog: ${var.catalog}
               azure_storage_external_location: ${var.azure_storage_external_location}
@@ -28,7 +28,7 @@ resources:
             - task_key: bootstrap
           environment_key: demo_env
           notebook_task:
-            notebook_path: staging/02_ingest_azurestorage.py
+            notebook_path: staging/02_ingest_azurestorage.ipynb
             base_parameters:
               catalog: ${var.catalog}
               pipeline_run_id: "{{job.run_id}}"
