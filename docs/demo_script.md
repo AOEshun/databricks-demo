@@ -15,7 +15,7 @@ Work through segments 1–13 in order for a full end-to-end demo. Each segment i
 - **Expected observation** — what success (or deliberate failure) looks like.
 - **Talking points** — 1–2 sentences you can say verbatim.
 
-You do not need to refer back to `CONTEXT.md` or the PRD during the demo.
+You do not need to refer back to the PRD during the demo.
 
 ---
 

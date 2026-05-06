@@ -14,7 +14,7 @@ Add a **Gold DLT pipeline** that produces three KPI aggregates plus a wide AI/BI
 
 Add a **serialized AI/BI Dashboard** that auto-deploys via DAB, plus a documented runbook for the Genie post-deploy setup.
 
-The full design is captured in `CONTEXT.md` §6 (Bronze, done), §7 (Silver), §8 (Gold), and in `docs/adr/0001-*` and `docs/adr/0002-*`.
+The full design is captured in `docs/adr/0001-*` and `docs/adr/0002-*`.
 
 ## User Stories
 
@@ -198,7 +198,6 @@ If the project grows beyond demo scope, the natural test targets are the four de
 
 ## Further Notes
 
-- Full architectural detail lives in `CONTEXT.md` §6 (Bronze, done), §7 (Silver, designed), §8 (Gold, designed).
 - See `docs/adr/0001-dlt-and-data-quality-belong-in-silver.md` and `docs/adr/0002-silver-reads-bronze-via-cdf-and-apply-changes.md` for the two architecturally significant decisions captured during design.
 - Bronze CDF was added in the staging cleanup commit; Silver depends on this being in place. Verify with `SHOW TBLPROPERTIES <bronze_table>` on a deployed dev environment before running Silver for the first time.
 - DLT pipelines are defined in `.ipynb` notebooks per the project's notebook-format convention (Databricks platform default since the recent platform update).
