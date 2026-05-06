@@ -1,0 +1,23 @@
+resources:
+  pipelines:
+    dlt_integration:
+      name: dlt-integration-silver
+
+      target: INTEGRATION
+
+      configuration:
+        catalog:       ${var.catalog}
+        bronze_schema: STAGING_AZURESTORAGE
+
+      libraries:
+        - notebook:
+            path: integration/05_silver_dlt_pipeline.ipynb
+
+      # Continuous=false → triggered mode; the Workflow task fires it on demand.
+      continuous: false
+
+      # Development mode can be toggled from the DLT UI without changing the YAML.
+      development: false
+
+      # Channel: current (latest Databricks Runtime for DLT)
+      channel: CURRENT
