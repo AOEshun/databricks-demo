@@ -23,8 +23,8 @@ resources:
               parquet_storage_location: ${var.parquet_storage_location}
               catalog_managed_location: ${var.catalog_managed_location}
 
-        - task_key: ingest_azurestorage
-          description: "Parquet-bestanden inladen via control table (full mode)"
+        - task_key: ingest_azurestorage_full
+          description: "Parquet inladen via control table — verwerkt rijen met load_type='full'"
           depends_on:
             - task_key: setup
           environment_key: demo_env
@@ -33,10 +33,18 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               pipeline_run_id: "{{job.run_id}}"
+              mode: full
+              reset: "false"
 
-        - task_key: dlt_staging
-          description: "DLT pipeline — Expectations + declaratieve graph view (parallel met ingest_azurestorage)"
+        - task_key: ingest_azurestorage_incremental
+          description: "Parquet inladen via control table — verwerkt rijen met load_type='incremental' (Auto Loader)"
           depends_on:
             - task_key: setup
-          pipeline_task:
-            pipeline_id: ${resources.pipelines.dlt_staging.id}
+          environment_key: demo_env
+          notebook_task:
+            notebook_path: staging/02_ingest_azurestorage.ipynb
+            base_parameters:
+              catalog: ${var.catalog}
+              pipeline_run_id: "{{job.run_id}}"
+              mode: incremental
+              reset: "false"
