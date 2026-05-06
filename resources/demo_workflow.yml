@@ -48,3 +48,11 @@ resources:
               pipeline_run_id: "{{job.run_id}}"
               mode: incremental
               reset: "false"
+
+        - task_key: dlt_integration
+          description: "Silver DLT pipeline — type-fixes + snake_case, CDF + apply_changes from Bronze into INTEGRATION"
+          depends_on:
+            - task_key: ingest_azurestorage_full
+            - task_key: ingest_azurestorage_incremental
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.dlt_integration.id}
