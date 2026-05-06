@@ -13,19 +13,20 @@ resources:
             client: "1"
 
       tasks:
-        - task_key: bootstrap
+        - task_key: setup
           description: "Catalog, schema's, volume en control table aanmaken (idempotent)"
           environment_key: demo_env
           notebook_task:
-            notebook_path: config/00_bootstrap.ipynb
+            notebook_path: config/00_setup.ipynb
             base_parameters:
               catalog: ${var.catalog}
-              azure_storage_external_location: ${var.azure_storage_external_location}
+              parquet_storage_location: ${var.parquet_storage_location}
+              catalog_managed_location: ${var.catalog_managed_location}
 
         - task_key: ingest_azurestorage
           description: "Parquet-bestanden inladen via control table (full mode)"
           depends_on:
-            - task_key: bootstrap
+            - task_key: setup
           environment_key: demo_env
           notebook_task:
             notebook_path: staging/02_ingest_azurestorage.ipynb
@@ -36,6 +37,6 @@ resources:
         - task_key: dlt_staging
           description: "DLT pipeline — Expectations + declaratieve graph view (parallel met ingest_azurestorage)"
           depends_on:
-            - task_key: bootstrap
+            - task_key: setup
           pipeline_task:
             pipeline_id: ${resources.pipelines.dlt_staging.id}

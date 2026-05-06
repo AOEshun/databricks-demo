@@ -6,14 +6,17 @@ include:
 
 variables:
   catalog:
-    description: Unity Catalog catalog name (e.g. DEMO_DEV)
-  azure_storage_external_location:
-    description: UC External Location name wrapping the Azure Storage parquet container
+    description: Unity Catalog catalog name (e.g. DEMO)
+  parquet_storage_location:
+    description: ABFSS URL of the parquet source folder (backing storage for the external volume)
+  catalog_managed_location:
+    description: ABFSS URL for the catalog's managed storage location (sibling of parquet folder)
 
 targets:
   dev:
     default: true
     mode: development
     variables:
-      catalog: DEMO_DEV  # TODO: maintainer to fill in
-      azure_storage_external_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/source/
+      catalog: DEMO
+      parquet_storage_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/parquet/
+      catalog_managed_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/managed/

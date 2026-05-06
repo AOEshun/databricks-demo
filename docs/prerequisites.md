@@ -9,7 +9,7 @@ Connect prerequisites are out of scope here and are covered separately in a late
 ## Overview
 
 The parquet ingest pipeline reads from an Azure Storage container via a Unity Catalog
-**External Location**. Before the bundle can be deployed and the bootstrap notebook can
+**External Location**. Before the bundle can be deployed and the setup notebook can
 create the External Volume, the following resources must exist:
 
 | Layer | Resource | Purpose |
@@ -125,16 +125,17 @@ databricks storage-credentials create \
 ## Step 4 — Create a Unity Catalog External Location
 
 An **External Location** maps a `abfss://` path on Azure Storage to a UC-managed access
-point. The bootstrap notebook will create an External Volume that points at a sub-path of
+point. The setup notebook will create an External Volume that points at a sub-path of
 this External Location.
 
 ### Databricks UI
 
 1. In the Databricks workspace, go to **Catalog** → **External data** → **External
    Locations** → **+ Add an external location**.
-2. **External location name**: choose a name (e.g. `demo-parquet-location`). Note this
-   name — it is the value you set for the `azure_storage_external_location` bundle
-   variable in `databricks.yml`.
+2. **External location name**: choose a name (e.g. `demo-parquet-location`). The bundle
+   doesn't reference this name directly — it uses `parquet_storage_location` (an `abfss://`
+   URL pointing at a sub-folder of the External Location). The name is only used when
+   granting privileges in Step 5.
 3. **URL**: `abfss://<container-name>@<storage-account-name>.dfs.core.windows.net/`
    (the root of the container holding the parquet files).
 4. **Storage credential**: select `demo-storage-credential` from Step 3.
@@ -156,15 +157,15 @@ databricks external-locations create \
 
 ## Step 5 — Grant UC Privileges to the Workspace User
 
-The user (or service principal) that runs `databricks bundle deploy` and the bootstrap
+The user (or service principal) that runs `databricks bundle deploy` and the setup
 notebook needs the following Unity Catalog privileges.
 
 ### Minimum required grants
 
 | Privilege | Object | Reason |
 |---|---|---|
-| `CREATE CATALOG` | Metastore | To create the `DEMO_DEV` catalog |
-| `CREATE EXTERNAL VOLUME` | External Location `demo-parquet-location` | To mount the volume in bootstrap |
+| `CREATE CATALOG` | Metastore | To create the `DEMO` catalog |
+| `CREATE EXTERNAL VOLUME` | External Location `demo-parquet-location` | To mount the volume in setup |
 | `READ FILES` | External Location `demo-parquet-location` | To read parquet files via the volume |
 | `WRITE FILES` | External Location `demo-parquet-location` | For Auto Loader checkpoint writes (Slice 2) |
 
@@ -204,7 +205,7 @@ Before running the bundle, confirm:
 - [ ] The Storage Credential `demo-storage-credential` is visible in **Catalog → External
       data → Credentials** and shows **Active**.
 - [ ] The External Location `demo-parquet-location` exists, its **Test connection** passes,
-      and the parquet files (`ORDER_HEADER_*.parquet`, `ORDER_DETAIL_*.parquet`) are visible
+      and the parquet files (`ORDER_HEADER*.parquet`, `ORDER_DETAIL*.parquet`) are visible
       under the container root.
 - [ ] The deploying user has `CREATE CATALOG` on the metastore and
       `CREATE EXTERNAL VOLUME` / `READ FILES` / `WRITE FILES` on the External Location.
@@ -217,9 +218,9 @@ proceed to `databricks bundle validate -t dev`.
 ## Notes
 
 - The External Location URL must end with a trailing `/`.
-- The parquet files must reside directly under a `source/` sub-folder within the container
-  (e.g. `abfss://container@account.dfs.core.windows.net/source/ORDER_HEADER_*.parquet`).
-  The bootstrap notebook creates the External Volume pointing at this `source/` sub-path.
+- The parquet files must reside directly under a `parquet/` sub-folder within the container
+  (e.g. `abfss://container@account.dfs.core.windows.net/parquet/ORDER_HEADER*.parquet`).
+  The setup notebook creates the External Volume pointing at this `parquet/` sub-path.
 - If the workspace is in a VNet with private endpoints, ensure the Access Connector's
   Managed Identity can reach the Storage Account over the private endpoint.
 - These steps cover the Azure Storage side only. SQL Server / Lakeflow Connect prerequisites

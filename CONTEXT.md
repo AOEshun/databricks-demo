@@ -10,16 +10,14 @@ De omgeving moet productie-waardig zijn in opzet en uitleg, ook al is het primai
 
 ## 1. Unity Catalog Structuur
 
-### Catalogs
-Drie omgevingen, elk als aparte catalog:
+### Catalog
+Eén catalog `DEMO`, dezelfde naam in elke omgeving. Omgevingsisolatie loopt via de Databricks Asset Bundle target (dev/test/prod) en de bijbehorende workspace — niet via catalog-naam.
 
-| Catalog | Omgeving |
+| Catalog | Doel |
 |---|---|
-| `DEMO_DEV` | Development |
-| `DEMO_TEST` | Test |
-| `DEMO_PROD` | Productie |
+| `DEMO` | Demo-objecten — dev/test/prod onderscheid via DAB target |
 
-**Argumentatie:** Databricks best practice is omgevingsisolatie op catalog-niveau. Dit geeft de beste toegangscontrole via Unity Catalog en is herkenbaar voor klanten die dit zelf willen implementeren.
+**Argumentatie:** Workspace- en target-isolatie geven al sterke scheiding; één catalog-naam houdt de demo-code en -documentatie consistent over omgevingen heen en voorkomt drift in SQL-snippets.
 
 ### Schema's (binnen elke catalog)
 Schema's zijn gebaseerd op de laag én de bronbron:
@@ -50,7 +48,7 @@ Schema's zijn gebaseerd op de laag én de bronbron:
 - Routering naar de juiste doeltabel gebeurt via Auto Loader's `pathGlobFilter`, gestuurd door de `file_pattern` kolom in de control table
 
 ```
-/Volumes/demo_dev/staging_azurestorage/source/
+/Volumes/demo/staging_azurestorage/parquet/
 ├── ORDER_HEADER*.parquet
 ├── ORDER_DETAIL*.parquet
 └── _checkpoints/        # Auto Loader checkpoints per target table
@@ -62,7 +60,7 @@ Schema's zijn gebaseerd op de laag én de bronbron:
 
 ### Locatie
 ```
-DEMO_DEV.CONFIG.pipeline_sources
+DEMO.CONFIG.pipeline_sources
 ```
 
 ### Kolommen
@@ -70,7 +68,7 @@ DEMO_DEV.CONFIG.pipeline_sources
 | Kolom | Type | Voorbeeld | Doel |
 |---|---|---|---|
 | `source_system` | string | `azurestorage` | Welk bronsysteem |
-| `source_path` | string | `/Volumes/demo_dev/staging_azurestorage/source` | Pad naar de bronfolder |
+| `source_path` | string | `/Volumes/demo/staging_azurestorage/parquet` | Pad naar de bronfolder |
 | `file_pattern` | string | `ORDER_HEADER*.parquet` | Glob filter binnen de folder (per doeltabel) |
 | `target_schema` | string | `STAGING_AZURESTORAGE` | Doelschema |
 | `target_table` | string | `order_header` | Doeltabelnaam |
@@ -84,8 +82,8 @@ DEMO_DEV.CONFIG.pipeline_sources
 
 | source_system | source_path | file_pattern | target_table | load_type |
 |---|---|---|---|---|
-| `azurestorage` | `/Volumes/demo_dev/staging_azurestorage/source` | `ORDER_HEADER*.parquet` | `order_header` | `full` |
-| `azurestorage` | `/Volumes/demo_dev/staging_azurestorage/source` | `ORDER_DETAIL*.parquet` | `order_detail` | `full` |
+| `azurestorage` | `/Volumes/demo/staging_azurestorage/parquet` | `ORDER_HEADER*.parquet` | `order_header` | `full` |
+| `azurestorage` | `/Volumes/demo/staging_azurestorage/parquet` | `ORDER_DETAIL*.parquet` | `order_detail` | `full` |
 
 **Argumentatie:** De control table is een Delta-tabel en profiteert daarmee automatisch van Delta Time Travel, Unity Catalog Audit Logs en Lineage — zonder extra configuratie.
 
@@ -128,7 +126,7 @@ Geen custom kolommen — Lakeflow Connect levert standaard zijn eigen CDC-metada
 - **Demo-moment:** Live switchen naar incrementeel via één UPDATE in de control table:
 
 ```sql
-UPDATE DEMO_DEV.CONFIG.pipeline_sources
+UPDATE DEMO.CONFIG.pipeline_sources
 SET load_type = 'incremental'
 WHERE source_system = 'azurestorage'
 AND target_table = 'order_header'
@@ -158,9 +156,9 @@ databricks-demo/
 │   ├── sqlserver.yml                   # Lakeflow Connect gateway + ingestion pipeline
 │   ├── sqlserver_job.yml               # Geplande Job (dagelijks 04:00 UTC) voor SQL Server pipeline
 │   ├── dlt_staging.yml                 # DLT pipeline definition
-│   └── demo_workflow.yml               # End-to-end Workflow (bootstrap → ingest → DLT → SQL Server)
+│   └── demo_workflow.yml               # End-to-end Workflow (setup → ingest → DLT → SQL Server)
 ├── config/
-│   └── 00_bootstrap.ipynb              # Catalog, schemas, volume én control table — alles in één
+│   └── 00_setup.ipynb                  # Catalog, schemas, volume én control table — alles in één
 ├── staging/
 │   ├── 02_ingest_azurestorage.ipynb    # Parquet inladen via control table (Auto Loader)
 │   └── dlt/
@@ -178,7 +176,7 @@ databricks-demo/
     └── demo_script.md                  # Handmatig demo-draaiboek met talking points en SQL snippets
 ```
 
-> **Opmerking:** Er is geen `03_ingest_sqlserver.ipynb` notebook. SQL Server wordt volledig declaratief ingeladen via Lakeflow Connect (`resources/sqlserver.yml`). Er is ook geen `01_create_volumes.ipynb`; volume-creatie zit in het bootstrap-notebook.
+> **Opmerking:** Er is geen `03_ingest_sqlserver.ipynb` notebook. SQL Server wordt volledig declaratief ingeladen via Lakeflow Connect (`resources/sqlserver.yml`). Er is ook geen `01_create_volumes.ipynb`; volume-creatie zit in het setup-notebook.
 
 > **Notebook-formaat:** Databricks gebruikt sinds de recente platform-update standaard `.ipynb` (Jupyter-formaat) voor nieuwe notebooks in plaats van `.py` (source-formaat). Alle nieuwe notebooks in deze demo worden dus als `.ipynb` aangemaakt.
 
@@ -206,13 +204,13 @@ Tonen hoe je teruggaat naar een vorige versie van de control table:
 
 ```sql
 -- Huidige versie
-SELECT * FROM DEMO_DEV.CONFIG.pipeline_sources
+SELECT * FROM DEMO.CONFIG.pipeline_sources
 
 -- Vorige versie
-SELECT * FROM DEMO_DEV.CONFIG.pipeline_sources VERSION AS OF 1
+SELECT * FROM DEMO.CONFIG.pipeline_sources VERSION AS OF 1
 
 -- Op tijdstip
-SELECT * FROM DEMO_DEV.CONFIG.pipeline_sources TIMESTAMP AS OF '2024-01-01'
+SELECT * FROM DEMO.CONFIG.pipeline_sources TIMESTAMP AS OF '2024-01-01'
 ```
 
 ### 9.2 Unity Catalog Audit Logs
@@ -231,10 +229,10 @@ Live voor een klant demonstreren dat één UPDATE in de control table het gedrag
 1. **Layer 1 prerequisites** (eenmalig, handmatig) — Access Connector, Storage Credential, External Location, UC Connection voor SQL Server. Zie `docs/prerequisites.md`.
 2. Azure DevOps repo koppelen aan Databricks Repos
 3. `databricks.yml` opzetten met variabelen en drie targets (alleen `dev` echt gevuld)
-4. `config/00_bootstrap.ipynb` — catalog, schemas, volume én control table aanmaken (idempotent)
+4. `config/00_setup.ipynb` — catalog, schemas, volume én control table aanmaken (idempotent)
 5. `staging/02_ingest_azurestorage.ipynb` — parquet inladen via Auto Loader, gestuurd door de control table
 6. `resources/dlt_staging.yml` + `staging/dlt/04_staging_dlt_pipeline.ipynb` — DLT pipeline met Expectations
-7. `resources/sqlserver.yml` + `resources/sqlserver_job.yml` updaten — Lakeflow Connect richten op `DEMO_DEV.STAGING_SQLSERVER`, Job op dagelijks 04:00 UTC
+7. `resources/sqlserver.yml` + `resources/sqlserver_job.yml` updaten — Lakeflow Connect richten op `DEMO.STAGING_SQLSERVER`, Job op dagelijks 04:00 UTC
 8. `resources/demo_workflow.yml` — end-to-end Workflow die alles aan elkaar knoopt
 9. `demo_showcase/` notebooks — Time Travel, Audit Logs, Lineage
 10. `docs/demo_script.md` — handmatig demo-draaiboek schrijven
