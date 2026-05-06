@@ -1,0 +1,6 @@
+resources:
+  dashboards:
+    tasty_bytes_sales:
+      display_name: tasty_bytes_sales
+      file_path: ../dashboards/tasty_bytes_sales.lvdash.json
+      warehouse_id: ${var.warehouse_id}
