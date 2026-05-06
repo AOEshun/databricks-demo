@@ -56,3 +56,10 @@ resources:
             - task_key: ingest_azurestorage_incremental
           pipeline_task:
             pipeline_id: ${resources.pipelines.dlt_integration.id}
+
+        - task_key: dlt_datamart
+          description: "Gold DLT pipeline — Materialised Views in DATAMART (daily_sales_by_truck)"
+          depends_on:
+            - task_key: dlt_integration
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.dlt_datamart.id}
