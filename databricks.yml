@@ -16,7 +16,37 @@ targets:
   dev:
     default: true
     mode: development
+    workspace:
+      host: https://adb-XXXXXXXXXXXXXXXX.X.azuredatabricks.net  # replace with your dev workspace URL
     variables:
       catalog: DEMO
       parquet_storage_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/parquet/
       catalog_managed_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/managed/
+
+  # ---------------------------------------------------------------------------
+  # TEST target — same catalog name (DEMO), isolated via workspace and DAB target.
+  # Fill in workspace.host and the storage URLs before deploying to test.
+  # ---------------------------------------------------------------------------
+  test:
+    mode: development
+    workspace:
+      host: https://adb-XXXXXXXXXXXXXXXX.X.azuredatabricks.net  # replace with your test workspace URL
+    variables:
+      catalog: DEMO
+      parquet_storage_location: ""   # populate before deploying to test
+      catalog_managed_location: ""   # populate before deploying to test
+
+  # ---------------------------------------------------------------------------
+  # PROD target — same catalog name (DEMO), isolated via workspace and DAB target.
+  # mode: production enforces service-principal requirement and disallows
+  # dev-mode shortcuts. Fill in workspace.host and storage URLs before
+  # deploying to prod. Provisioning the service principal is out of scope here.
+  # ---------------------------------------------------------------------------
+  prod:
+    mode: production
+    workspace:
+      host: https://adb-XXXXXXXXXXXXXXXX.X.azuredatabricks.net  # replace with your prod workspace URL
+    variables:
+      catalog: DEMO
+      parquet_storage_location: ""   # populate before deploying to prod
+      catalog_managed_location: ""   # populate before deploying to prod
