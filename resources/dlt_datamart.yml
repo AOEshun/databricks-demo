@@ -1,0 +1,26 @@
+resources:
+  pipelines:
+    dlt_datamart:
+      name: demo-gold-datamart
+
+      catalog: ${var.catalog}
+      target: DATAMART
+
+      clusters:
+        - label: default
+          autoscale:
+            min_workers: 1
+            max_workers: 4
+            mode: ENHANCED
+
+      libraries:
+        - notebook:
+            path: datamart/06_gold_dlt_pipeline.ipynb
+
+      configuration:
+        pipeline.catalog: ${var.catalog}
+
+      development: true
+      continuous: false
+      channel: CURRENT
+      edition: ADVANCED
