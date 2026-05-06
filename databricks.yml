@@ -11,6 +11,8 @@ variables:
     description: ABFSS URL of the parquet source folder (backing storage for the external volume)
   catalog_managed_location:
     description: ABFSS URL for the catalog's managed storage location (sibling of parquet folder)
+  warehouse_id:
+    description: SQL warehouse ID used by the AI/BI Dashboard for query execution
 
 targets:
   dev:
@@ -22,6 +24,7 @@ targets:
       catalog: DEMO
       parquet_storage_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/parquet/
       catalog_managed_location: abfss://sourcetables@tastybytessa.dfs.core.windows.net/managed/
+      warehouse_id: ""   # populate with your SQL warehouse ID before deploying
 
   # ---------------------------------------------------------------------------
   # TEST target — same catalog name (DEMO), isolated via workspace and DAB target.
@@ -35,6 +38,7 @@ targets:
       catalog: DEMO
       parquet_storage_location: ""   # populate before deploying to test
       catalog_managed_location: ""   # populate before deploying to test
+      warehouse_id: ""   # populate with your SQL warehouse ID before deploying
 
   # ---------------------------------------------------------------------------
   # PROD target — same catalog name (DEMO), isolated via workspace and DAB target.
@@ -50,3 +54,4 @@ targets:
       catalog: DEMO
       parquet_storage_location: ""   # populate before deploying to prod
       catalog_managed_location: ""   # populate before deploying to prod
+      warehouse_id: ""   # populate with your SQL warehouse ID before deploying
