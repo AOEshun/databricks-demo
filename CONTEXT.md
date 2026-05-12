@@ -338,13 +338,13 @@ De Gold-laag is gesplitst over **twee beheermechanismen**, gekozen per object op
 | `DATAMART.dim_order_channel` | **View** | `apply_views` | Idem |
 | `DATAMART.dim_shift` | **View** | `apply_views` | Idem |
 | `DATAMART.dim_discount` | **View** | `apply_views` | Idem |
-| `DATAMART.fact_order` | **View** | `apply_views` | Pure projectie + SHA2, geen aggregaat |
+| `DATAMART.fact_order` | **MV** | `dlt_datamart` pipeline | Order-grain fact, materialised zodat Silver-correcties automatisch propageren |
 | `DATAMART.fact_sales_line` | **MV** (Liquid Clustering) | `dlt_datamart` pipeline | Zwaarste tabel, profiteert van clustering |
 
 **Folders:**
 - `views/integration/sales_line.sql` — Silver view (zie §7)
-- `views/datamart/*.sql` — 10 Datamart view-definities
-- `datamart/fact_sales_line.sql` — enige MV, draait in DLT-pipeline `dlt_datamart`
+- `views/datamart/*.sql` — 9 Datamart dim-definities
+- `datamart/*.sql` — twee MV's (`fact_order`, `fact_sales_line`), draaien in DLT-pipeline `dlt_datamart`
 
 ### Sleutelkeuze: wanneer view, wanneer MV?
 
@@ -354,7 +354,7 @@ De Gold-laag is gesplitst over **twee beheermechanismen**, gekozen per object op
 | Is herberekening op elke query goedkoop? (lage cardinaliteit, simpele projectie) | ✅ | — |
 | Voegt materialisatie aantoonbaar waarde toe? (Liquid Clustering, zware joins/aggregaten) | — | ✅ |
 
-Voor de demo: alle dims + `fact_order` voldoen aan "goedkoop genoeg om altijd te herberekenen". `fact_sales_line` is regel-grain met 9 SHA2-berekeningen plus de upstream join — daar verdient Liquid Clustering de storage-kost terug.
+Voor de demo: alle dims voldoen aan "goedkoop genoeg om altijd te herberekenen" en blijven views. De feiten zijn MVs: `fact_order` is order-grain en zonder clustering al snel genoeg; `fact_sales_line` is regel-grain met 9 SHA2-berekeningen plus de upstream join — daar verdient Liquid Clustering de storage-kost terug.
 
 ### Sleutelstrategie — SHA2-surrogate keys
 
@@ -437,15 +437,15 @@ setup
        ↓
        dlt_integration              (DLT — 4 Streaming Tables in INTEGRATION)
         ↓
-        apply_views                 (notebook — Silver sales_line view + 10 Datamart views)
+        apply_views                 (notebook — Silver sales_line view + 9 Datamart dim views)
          ↓
-         dlt_datamart               (DLT — fact_sales_line MV met Liquid Clustering)
+         dlt_datamart               (DLT — fact_order MV + fact_sales_line MV met Liquid Clustering)
 ```
 
 Drie volgordelijke stappen na ingest:
 1. **`dlt_integration`** bouwt de Streaming Tables.
-2. **`apply_views`** (`views/07_apply_views.ipynb`) past alle plain SQL views toe — `sales_line` eerst (Silver), daarna de Datamart views. `fact_sales_line` MV in stap 3 leest van `sales_line` view, dus die moet hier al bestaan.
-3. **`dlt_datamart`** materialiseert `fact_sales_line` met Liquid Clustering. Eén MV in deze pipeline — alleen `datamart/fact_sales_line.sql`.
+2. **`apply_views`** (`views/07_apply_views.ipynb`) past alle plain SQL views toe — `sales_line` eerst (Silver), daarna de 9 Datamart dim views. `fact_sales_line` MV in stap 3 leest van `sales_line` view, dus die moet hier al bestaan.
+3. **`dlt_datamart`** materialiseert beide feiten: `fact_order` (order-grain, plain MV op `INTEGRATION.order_header`) en `fact_sales_line` (regel-grain, Liquid Clustering). Twee MV's in deze pipeline — `datamart/fact_order.sql` + `datamart/fact_sales_line.sql`.
 
 ### Consumption-laag
 
@@ -506,10 +506,10 @@ databricks-demo/
 │       ├── dim_currency.sql
 │       ├── dim_order_channel.sql
 │       ├── dim_shift.sql
-│       ├── dim_discount.sql
-│       └── fact_order.sql              # 1 fact als view
-├── datamart/                           # DLT pipeline source folder — 1 .sql file (glob include)
-│   └── fact_sales_line.sql             # Enige MV (Liquid Clustering) — leest sales_line view
+│       └── dim_discount.sql
+├── datamart/                           # DLT pipeline source folder — 2 .sql files (glob include)
+│   ├── fact_order.sql                  # Order-grain MV — leest INTEGRATION.order_header
+│   └── fact_sales_line.sql             # Regel-grain MV (Liquid Clustering) — leest sales_line view
 ├── dashboards/
 │   └── tasty_bytes_sales.lvdash.json   # AI/BI Dashboard definitie (auto-deploys via DAB)
 ├── demo_showcase/
@@ -579,8 +579,8 @@ Live voor een klant demonstreren dat één UPDATE in de control table het gedrag
 6. `resources/demo_workflow.yml` — Workflow met `setup → (ingest_full || ingest_incremental)`
 7. *(Geparkeerd)* `resources/sqlserver.yml` + `resources/sqlserver_job.yml` — Lakeflow Connect op `DEMO.STAGING_SQLSERVER`
 8. **Integration-laag (DLT)** — `integration/*.sql` (4 bestanden, glob include in `resources/dlt_integration.yml`). Streaming Tables met Expectations (warn/drop/fail), gepaarde `_quarantine` tabellen, type-fixes (string→decimal/timestamp, int-millis→`'HH:mm:ss'`), `APPLY CHANGES FROM SNAPSHOT` voor uniforme full/incremental-handling.
-9. **Views-laag** — `views/integration/sales_line.sql` + `views/datamart/*.sql` (10 bestanden: 9 dims + `fact_order`). Toegepast door `views/07_apply_views.ipynb` als losse Workflow-task. Geen storage, altijd vers tegen Silver. SHA2-surrogate keys, NULL-safe via `COALESCE('__UNKNOWN__')`.
-10. **Datamart-laag (DLT)** — `datamart/fact_sales_line.sql` + `resources/dlt_datamart.yml` (glob include). Enige MV, met Liquid Clustering op de meest gefilterde FK-kolommen. Leest van `INTEGRATION.sales_line` view.
+9. **Views-laag** — `views/integration/sales_line.sql` + `views/datamart/*.sql` (9 dim-bestanden). Toegepast door `views/07_apply_views.ipynb` als losse Workflow-task. Geen storage, altijd vers tegen Silver. SHA2-surrogate keys, NULL-safe via `COALESCE('__UNKNOWN__')`.
+10. **Datamart-laag (DLT)** — `datamart/*.sql` (2 feiten: `fact_order`, `fact_sales_line`) + `resources/dlt_datamart.yml` (glob include). `fact_order` is een plain MV op `INTEGRATION.order_header`; `fact_sales_line` heeft Liquid Clustering op de meest gefilterde FK-kolommen en leest van `INTEGRATION.sales_line` view.
 11. **AI/BI Dashboard** — `dashboards/tasty_bytes_sales.lvdash.json` + `resources/dashboard.yml`. Deploys via DAB met de pipeline.
 12. `demo_showcase/` notebooks — Time Travel, Audit Logs, Lineage
 13. `docs/demo_script.md` — handmatig demo-draaiboek schrijven (incl. Genie-space setup als post-deploy stap)

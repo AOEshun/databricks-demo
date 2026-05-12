@@ -1,7 +1,13 @@
--- fact_order — Standard SQL view. Order-grain fact. One row per order_id.
--- 8 SHA2 dimension FKs (computed inline) + 5 measures + 1 degenerate dim.
+-- fact_order — Order-grain fact MV.
+--
+-- Eén rij per order_id uit INTEGRATION.order_header. 8 SHA2 dimension FKs +
+-- 5 measures + 1 degenerate dim. Materialised zodat Silver-correcties
+-- automatisch propageren bij elke dlt_datamart refresh, naast fact_sales_line
+-- in dezelfde DLT pipeline.
 
-CREATE OR REPLACE VIEW DATAMART.fact_order AS
+CREATE OR REFRESH MATERIALIZED VIEW fact_order
+COMMENT 'Order-grain fact. One row per order_id from INTEGRATION.order_header. 8 SHA2 dimension FKs + 5 measures + 1 degenerate dim.'
+AS
 SELECT
   -- ---------------------------------------------------------------------
   -- Foreign keys (SHA2 surrogates, computed inline to match dim definitions)
@@ -31,4 +37,4 @@ SELECT
   order_discount_amount,
   order_total,
   CAST(UNIX_TIMESTAMP(served_ts) - UNIX_TIMESTAMP(order_ts) AS BIGINT) AS time_to_serve_seconds
-FROM INTEGRATION.order_header;
+FROM ${pipeline.catalog}.INTEGRATION.order_header;

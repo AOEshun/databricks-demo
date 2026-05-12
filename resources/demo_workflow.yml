@@ -58,7 +58,7 @@ resources:
             pipeline_id: ${resources.pipelines.dlt_integration.id}
 
         - task_key: apply_views
-          description: "Standaard SQL views (Silver sales_line + alle Datamart dims/fact_order). Niet-DLT, virtualisatie-laag."
+          description: "Standaard SQL views (Silver sales_line + 9 Datamart dim views). Niet-DLT, virtualisatie-laag."
           depends_on:
             - task_key: dlt_integration
           environment_key: demo_env
@@ -68,7 +68,7 @@ resources:
               catalog: ${var.catalog}
 
         - task_key: dlt_datamart
-          description: "Gold DLT pipeline — fact_sales_line MV met Liquid Clustering (leest sales_line view)"
+          description: "Gold DLT pipeline — fact_order MV + fact_sales_line MV (Liquid Clustering, leest sales_line view)"
           depends_on:
             - task_key: apply_views
           pipeline_task:
