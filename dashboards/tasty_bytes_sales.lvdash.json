@@ -4,22 +4,22 @@
     {
       "name": "monthly_revenue_by_currency",
       "displayName": "Monthly Revenue by Currency",
-      "query": "SELECT year_month, order_currency, total_revenue FROM DEMO.DATAMART.monthly_revenue_by_currency ORDER BY year_month"
+      "query": "SELECT d.year_month_start AS year_month, c.order_currency, SUM(f.order_total) AS total_revenue FROM DEMO.DATAMART.fact_order f JOIN DEMO.DATAMART.dim_date d ON d.dim_date_key = f.dim_date_key JOIN DEMO.DATAMART.dim_currency c ON c.dim_currency_key = f.dim_currency_key GROUP BY d.year_month_start, c.order_currency ORDER BY year_month"
     },
     {
       "name": "top_trucks_by_revenue",
       "displayName": "Top Trucks by Revenue",
-      "query": "SELECT truck_id, SUM(total_revenue) AS total_revenue FROM DEMO.DATAMART.daily_sales_by_truck GROUP BY truck_id ORDER BY total_revenue DESC LIMIT 10"
+      "query": "SELECT t.truck_id, SUM(f.order_total) AS total_revenue FROM DEMO.DATAMART.fact_order f JOIN DEMO.DATAMART.dim_truck t ON t.dim_truck_key = f.dim_truck_key GROUP BY t.truck_id ORDER BY total_revenue DESC LIMIT 10"
     },
     {
       "name": "top_locations_by_revenue",
       "displayName": "Top Locations by Revenue",
-      "query": "SELECT location_id, SUM(total_revenue) AS total_revenue FROM DEMO.DATAMART.daily_sales_by_location GROUP BY location_id ORDER BY total_revenue DESC LIMIT 10"
+      "query": "SELECT l.location_id, SUM(f.order_total) AS total_revenue FROM DEMO.DATAMART.fact_order f JOIN DEMO.DATAMART.dim_location l ON l.dim_location_key = f.dim_location_key GROUP BY l.location_id ORDER BY total_revenue DESC LIMIT 10"
     },
     {
       "name": "kpi_totals",
       "displayName": "KPI Totals",
-      "query": "SELECT SUM(total_revenue) AS total_revenue, SUM(total_orders) AS total_orders FROM DEMO.DATAMART.daily_sales_by_truck"
+      "query": "SELECT SUM(order_total) AS total_revenue, COUNT(*) AS total_orders FROM DEMO.DATAMART.fact_order"
     }
   ],
   "pages": [

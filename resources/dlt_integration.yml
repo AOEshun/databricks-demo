@@ -14,8 +14,8 @@ resources:
             mode: ENHANCED
 
       libraries:
-        - notebook:
-            path: integration/05_silver_dlt_pipeline.ipynb
+        - glob:
+            include: integration/*.sql
 
       configuration:
         pipeline.catalog: ${var.catalog}

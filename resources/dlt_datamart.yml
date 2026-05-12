@@ -14,8 +14,8 @@ resources:
             mode: ENHANCED
 
       libraries:
-        - notebook:
-            path: datamart/06_gold_dlt_pipeline.ipynb
+        - glob:
+            include: datamart/*.sql
 
       configuration:
         pipeline.catalog: ${var.catalog}

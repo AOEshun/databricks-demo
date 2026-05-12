@@ -185,65 +185,71 @@ Elke Bronze-tabel wordt aangemaakt met `delta.enableChangeDataFeed=true`. Dat ma
 
 Silver levert de **Enterprise view**: gevalideerde, gestandaardiseerde en geïntegreerde data per bedrijfsentiteit. Type-fixes, snake_case-namen, kwaliteitscontroles en quarantine van slechte rijen horen hier — niet in Bronze.
 
-### Eén DLT-pipeline, vijf tabellen in `INTEGRATION`
+### Eén DLT-pipeline + één view, vijf objecten in `INTEGRATION`
 
-`integration/05_silver_dlt_pipeline.ipynb` definieert één Lakeflow Declarative Pipeline (DLT) met vijf tabellen:
+De `integration/`-folder bevat vier SQL DLT-bestanden (`integration/*.sql`), opgepikt via `libraries: - glob: include: integration/*.sql` in `resources/dlt_integration.yml`. Daarnaast bestaat `INTEGRATION.sales_line` als standaard SQL view (niet binnen DLT — zie `views/integration/sales_line.sql`, toegepast door `views/07_apply_views.ipynb`).
 
-| Tabel | Type | Inhoud |
-|---|---|---|
-| `INTEGRATION.order_header` | Streaming Table | Gecleaned `order_header` — rijen die alle drop-regels passeren |
-| `INTEGRATION.order_header_quarantine` | Streaming Table | Rijen die één of meer drop-regels schenden + `failed_rules`-kolom |
-| `INTEGRATION.order_detail` | Streaming Table | Gecleaned `order_detail` |
-| `INTEGRATION.order_detail_quarantine` | Streaming Table | Schendende detail-rijen + `failed_rules`-kolom |
-| `INTEGRATION.sales_line` | Materialised View | Geïntegreerde view: `order_header ⨝ order_detail` op `order_id`, één rij per orderregel |
+| Object | Type | Beheerd door | Inhoud |
+|---|---|---|---|
+| `INTEGRATION.order_header` | Streaming Table | DLT pipeline | Gecleaned `order_header` — rijen die alle drop-regels passeren |
+| `INTEGRATION.order_header_quarantine` | Streaming Table | DLT pipeline | Schendende rijen + `failed_rules`-kolom |
+| `INTEGRATION.order_detail` | Streaming Table | DLT pipeline | Gecleaned `order_detail` |
+| `INTEGRATION.order_detail_quarantine` | Streaming Table | DLT pipeline | Schendende detail-rijen + `failed_rules`-kolom |
+| `INTEGRATION.sales_line` | **View** | `apply_views` notebook | Pure join `order_header ⨝ order_detail` — altijd vers, geen storage |
 
-**Naamgeving:** kolomnamen worden snake_case + Engels (`ORDER_ID` → `order_id`, `SHIFT_START_TIME` → `shift_start_time`, etc.). Silver is direct bruikbaar voor analisten zonder bron-jargon.
+**Naamgeving:** kolomnamen worden snake_case + Engels (`ORDER_ID` → `order_id`, etc.). Silver is direct bruikbaar voor analisten zonder bron-jargon.
 
-### Bron-leespatroon: Change Data Feed + apply_changes
+### Bron-leespatroon: APPLY CHANGES FROM SNAPSHOT
 
-Bronze schrijft via twee modes (`full` overschrijft, `incremental` appendt). Een gewone streaming-read op een tabel die overschreven wordt, faalt. Daarom:
+Bronze schrijft via twee modes (`full` overschrijft, `incremental` appendt). Een gewone streaming-read op een overschreven tabel faalt of dupliceert. Daarom gebruikt Silver het **snapshot-diff**-patroon van DLT in pure SQL:
 
-1. Bronze-tabellen hebben `delta.enableChangeDataFeed=true` (zie §6).
-2. Silver leest van de Bronze CDF: `spark.readStream.option("readChangeFeed", "true").table(...)`.
-3. Silver gebruikt DLT's `apply_changes` (a.k.a. `auto_cdc`) om de change-events declaratief te MERGEn naar de Silver-tabel.
-
-Effect: Bronze-overschrijvingen verschijnen in CDF als `delete_row` + `insert_row` events. Silver verwerkt beide zonder breken. Mode-switches in Bronze hebben nul impact op Silver pipeline-state. Hetzelfde patroon werkt later voor Lakeflow Connect's CDC-feed van SQL Server — geen herontwerp nodig.
-
-### Quarantine-patroon (gepaarde tabellen)
-
-Voor elke gecleande tabel bestaat een gespiegelde `_quarantine` tabel. Routering gebeurt via een filter op een gezamenlijk predicate:
-
-```python
-DROP_RULES = {
-    "order_ts_not_null":     "order_ts IS NOT NULL",
-    "customer_id_not_null":  "customer_id IS NOT NULL",
-    "order_total_positive":  "order_total >= 0",
-    # ...
-}
-clean_predicate = " AND ".join(f"({r})" for r in DROP_RULES.values())
-
-# Cleansed: rijen die alle drop-regels passeren
-.filter(clean_predicate)
-
-# Quarantine: het inverse + welke regels gefaald zijn
-.filter(f"NOT ({clean_predicate})")
-.withColumn("failed_rules", build_failed_rules_array(DROP_RULES))
+```sql
+APPLY CHANGES INTO order_header
+FROM SNAPSHOT order_header_clean_src
+KEYS (order_id)
+STORED AS SCD TYPE 1;
 ```
 
-Drop-regels gooien rijen niet weg — ze landen in `_quarantine` met een `failed_rules ARRAY<STRING>` kolom. Triage:
+Per pipeline-run vergelijkt DLT de huidige snapshot van de bron met de vorige en MERGEt het verschil naar de target Streaming Table. Effect:
+- Full overschrijvingen in Bronze: ontbrekende `order_id`s worden gedelete, nieuwe geïnsert, gewijzigde geüpdate.
+- Incremental appends: alleen nieuwe rijen verschijnen als insert.
+- Eén patroon dekt beide modes — geen CDF-metadata nodig, geen `_change_type`-handling in de Silver-code.
+
+De type-fixes en drop-rule-filter zitten in een intermediaire Materialised View (`order_header_clean_src`) — die wordt elk pipeline-run volledig herberekend en is de snapshot-bron voor APPLY CHANGES.
+
+### Quarantine-patroon (gepaarde bestanden)
+
+Elke gecleande Streaming Table heeft een gespiegelde `_quarantine` Streaming Table in een apart SQL-bestand. Het quarantine-bestand gebruikt het **inverse filter** + bouwt een `failed_rules ARRAY<STRING>` op:
+
+```sql
+SELECT *,
+  ARRAY_EXCEPT(
+    ARRAY(
+      CASE WHEN order_ts IS NULL       THEN 'order_ts_not_null'        END,
+      CASE WHEN customer_id IS NULL    THEN 'customer_id_not_null'     END,
+      CASE WHEN order_total < 0        THEN 'order_total_non_negative' END,
+      ...
+    ),
+    ARRAY(CAST(NULL AS STRING))
+  ) AS failed_rules
+FROM typed
+WHERE NOT (<clean predicate>);
+```
+
+Triage:
 
 ```sql
 SELECT * FROM INTEGRATION.order_header_quarantine
-WHERE  array_contains(failed_rules, 'order_total_positive');
+WHERE  array_contains(failed_rules, 'order_total_non_negative');
 ```
 
 ### Drie ernstniveaus
 
-| Niveau | DLT-decorator / mechanisme | Effect |
+| Niveau | Mechanisme in SQL DLT | Effect |
 |---|---|---|
-| `warn` | `@dlt.expect_all(rules)` | Rij blijft in cleansed; schending wordt geteld in DLT-events |
-| `drop` | filter + `_quarantine`-tabel | Rij wordt geroute naar `_quarantine` met `failed_rules` |
-| `fail` | `@dlt.expect_all_or_fail(rules)` | Pipeline halt op schending — voor invariants die nooit mogen falen |
+| `warn` | `CONSTRAINT ... EXPECT (...)` (zonder ON VIOLATION) | Rij blijft in cleansed; schending verschijnt in DLT-eventlog |
+| `drop` | `WHERE`-filter in de clean source MV + inverse in quarantine | Rij gaat naar `_quarantine` met `failed_rules` |
+| `fail` | `CONSTRAINT ... EXPECT (...) ON VIOLATION FAIL UPDATE` | Pipeline halt op schending |
 
 ### Regel-set per tabel
 
@@ -295,79 +301,132 @@ setup
   ├─→ ingest_azurestorage_full         (mode=full)
   └─→ ingest_azurestorage_incremental  (mode=incremental)
        ↓
-       dlt_integration                  (DLT pipeline_task)
+       dlt_integration                  (DLT pipeline_task — 4 streaming tables)
+        ↓
+        apply_views                     (notebook task — sales_line view + datamart views)
 ```
 
-De `dlt_integration` taak hangt af van **beide** ingest-taken. De DLT-pipeline zelf is gedefinieerd in `resources/dlt_integration.yml`.
+De `dlt_integration` taak hangt af van **beide** ingest-taken. De `sales_line`-view wordt direct daarna door `apply_views` aangemaakt (zie §8).
 
 ### Wat Silver specifiek demonstreert
 
 - **DLT Expectations** op drie ernstniveaus + tastbare quarantine-tabellen
-- **Apply changes** voor change-data-capture handling vanuit Bronze CDF
-- **Declaratieve graph view** in de DLT-UI met vijf nodes en hun afhankelijkheden
-- **Materialised view** voor de geïntegreerde `sales_line`
+- **APPLY CHANGES FROM SNAPSHOT** voor uniforme handling van full-overwrite én incremental-append modes — pure SQL, geen CDF-metadata in user code
+- **Declaratieve graph view** in de DLT-UI met vier Streaming Tables + hun helper-MVs
+- **Standaard SQL view** voor `sales_line` — geen materialisatie, altijd vers, demonstreert wanneer virtualisatie loont (zie §8 Sleutelkeuzes)
 
 ---
 
-## 8. Pipeline Aanpak — Gold (Datamart)
+## 8. Pipeline Aanpak — Gold (Datamart, Star Schema)
 
 ### Doel van de laag
 
-Gold levert **consumption-ready, project-specifieke** data: gedenormaliseerde, lees-geoptimaliseerde tabellen waarop dashboards en AI/BI Genie direct kunnen draaien zonder joins. Per Databricks: "de-normalized and read-optimized data models with fewer joins" + Materialised Views voor frequent gequeryde metrics.
+Gold levert **consumption-ready, project-specifieke** data in een klassieke Kimball **star schema** vorm: feiten- en dimensietabellen waarop dashboards en AI/BI Genie via simpele joins kunnen draaien. Per Databricks-best-practice: "de-normalized and read-optimized data models" + Materialised Views voor declaratieve, auto-refreshing aggregaten.
 
-### Eén DLT-pipeline, vier tabellen in `DATAMART`
+### Hybride architectuur — views voor virtualisatie, één MV voor performance
 
-`datamart/06_gold_dlt_pipeline.ipynb` definieert één Lakeflow Declarative Pipeline met vier Materialised Views:
+De Gold-laag is gesplitst over **twee beheermechanismen**, gekozen per object op basis van waar materialisatie waarde toevoegt:
 
-| Tabel | Grain | Bron | Doel |
+| Tabel | Type | Beheerd door | Reden |
 |---|---|---|---|
-| `DATAMART.daily_sales_by_truck` | (order_date, truck_id) | `INTEGRATION.order_header` | KPI: revenue per truck per dag |
-| `DATAMART.daily_sales_by_location` | (order_date, location_id) | `INTEGRATION.order_header` | KPI: revenue per locatie per dag |
-| `DATAMART.monthly_revenue_by_currency` | (year_month, order_currency) | `INTEGRATION.order_header` | Maandtrend per valuta |
-| `DATAMART.sales_lines_wide` | per sales-line | `INTEGRATION.sales_line` | AI/BI Genie + Dashboards target |
+| `DATAMART.dim_date` | **View** | `apply_views` | Lage cardinaliteit, simpele projectie |
+| `DATAMART.dim_truck` | **View** | `apply_views` | Idem |
+| `DATAMART.dim_location` | **View** | `apply_views` | Idem |
+| `DATAMART.dim_customer` | **View** | `apply_views` | Idem |
+| `DATAMART.dim_menu_item` | **View** | `apply_views` | Idem |
+| `DATAMART.dim_currency` | **View** | `apply_views` | Idem |
+| `DATAMART.dim_order_channel` | **View** | `apply_views` | Idem |
+| `DATAMART.dim_shift` | **View** | `apply_views` | Idem |
+| `DATAMART.dim_discount` | **View** | `apply_views` | Idem |
+| `DATAMART.fact_order` | **View** | `apply_views` | Pure projectie + SHA2, geen aggregaat |
+| `DATAMART.fact_sales_line` | **MV** (Liquid Clustering) | `dlt_datamart` pipeline | Zwaarste tabel, profiteert van clustering |
 
-**Bron-keuze:** aggregaten lezen van `order_header` (order-grain) om `SUM`-over-duplicated-line-rijen te voorkomen. Alleen `sales_lines_wide` leest van `sales_line` (line-grain).
+**Folders:**
+- `views/integration/sales_line.sql` — Silver view (zie §7)
+- `views/datamart/*.sql` — 10 Datamart view-definities
+- `datamart/fact_sales_line.sql` — enige MV, draait in DLT-pipeline `dlt_datamart`
 
-### Tabelspec — daily aggregaten (truck en location)
+### Sleutelkeuze: wanneer view, wanneer MV?
+
+| Vraag | View | MV |
+|---|---|---|
+| Heeft het object state nodig? (CDF-cursor, MERGE-progressie) | ❌ → Streaming Table | ❌ → Streaming Table |
+| Is herberekening op elke query goedkoop? (lage cardinaliteit, simpele projectie) | ✅ | — |
+| Voegt materialisatie aantoonbaar waarde toe? (Liquid Clustering, zware joins/aggregaten) | — | ✅ |
+
+Voor de demo: alle dims + `fact_order` voldoen aan "goedkoop genoeg om altijd te herberekenen". `fact_sales_line` is regel-grain met 9 SHA2-berekeningen plus de upstream join — daar verdient Liquid Clustering de storage-kost terug.
+
+### Sleutelstrategie — SHA2-surrogate keys
+
+Elke dimensie heeft één surrogate key `dim_<entity>_key` van type `STRING` (64-char hex), gegenereerd via:
+
+```sql
+SHA2(COALESCE(CAST(<natural_key> AS STRING), '__UNKNOWN__'), 256)
+```
+
+De feiten berekenen exact dezelfde formule **inline** op hun eigen FK-kolommen — geen lookup-join nodig tijdens de load. NULL-natuurlijke-sleutels (warn-regels in Silver: `truck_id`, `location_id`, `shift_id`, `discount_id`) collapsen op één gedeelde *Unknown*-key per dim, zodat orders met ontbrekende attributen niet uit BI verdwijnen.
+
+### Tabelspec — `dim_date`
+
+Kalenderdimensie gegenereerd uit `[MIN(order_ts), MAX(order_ts)]` via `SEQUENCE` + `EXPLODE` — bevat ook dagen zonder orders zodat tijdseries geen gaten hebben.
+
+| Kolom | Type |
+|---|---|
+| `dim_date_key` | STRING (SHA2) |
+| `full_date` | DATE |
+| `year`, `quarter`, `month`, `day` | INT |
+| `month_name`, `day_name` | STRING |
+| `day_of_week`, `week_of_year` | INT |
+| `is_weekend` | BOOLEAN |
+| `year_month_start`, `year_quarter_start`, `year_start` | DATE |
+
+### Tabelspec — entity-dimensies
+
+Alle entity-dims (`dim_truck`, `dim_location`, `dim_customer`, `dim_menu_item`, `dim_currency`, `dim_order_channel`, `dim_discount`) hebben dezelfde structuur:
+
+| Kolom | Type |
+|---|---|
+| `dim_<entity>_key` | STRING (SHA2 surrogate) |
+| `<natural_key>` | bron-type (DECIMAL of STRING) |
+
+Rijkere beschrijvende attributen worden toegevoegd zodra de bron ze levert.
+
+### Tabelspec — `dim_shift`
+
+Extra beschrijvende attributen bovenop de natuurlijke sleutel:
 
 | Kolom | Type | Berekening |
 |---|---|---|
-| `order_date` | DATE | `CAST(order_ts AS DATE)` |
-| `truck_id` / `location_id` | DECIMAL(38, 0) | group key |
-| `total_orders` | BIGINT | `COUNT(*)` |
-| `total_revenue` | DECIMAL(38, 4) | `SUM(order_total)` |
-| `total_tax` | DECIMAL(38, 4) | `SUM(order_tax_amount)` |
-| `total_discount` | DECIMAL(38, 4) | `SUM(order_discount_amount)` |
-| `avg_order_value` | DECIMAL(38, 4) | `total_revenue / total_orders` |
+| `dim_shift_key` | STRING | SHA2 |
+| `shift_id` | DECIMAL(38,0) | natuurlijke sleutel |
+| `shift_start_time`, `shift_end_time` | STRING `'HH:mm:ss'` | passthrough |
+| `shift_duration_minutes` | INT | `(UNIX_TIMESTAMP(end,'HH:mm:ss') - UNIX_TIMESTAMP(start,'HH:mm:ss')) / 60` |
 
-NULL `truck_id` / `location_id` rijen worden bewaard (`warn` in Silver, niet gequarantineerd) — ze verschijnen als één "Unknown"-rij in de aggregate. Dit maakt data-attributie-issues zichtbaar voor analisten.
+### Tabelspec — `fact_order`
 
-### Tabelspec — `monthly_revenue_by_currency`
+Order-grain feitentabel. Eén rij per `order_id`.
 
-| Kolom | Type | Berekening |
+| Kolom | Type | Categorie |
 |---|---|---|
-| `year_month` | DATE | `DATE_TRUNC('month', order_ts)` (eerste van de maand) |
-| `order_currency` | STRING | group key |
-| `total_orders` | BIGINT | `COUNT(*)` |
-| `total_revenue` | DECIMAL(38, 4) | `SUM(order_total)` |
-| `avg_order_value` | DECIMAL(38, 4) | derived |
+| `dim_date_key`, `dim_truck_key`, `dim_location_key`, `dim_customer_key`, `dim_shift_key`, `dim_currency_key`, `dim_order_channel_key`, `dim_discount_key` | STRING | 8 FK's |
+| `order_id` | DECIMAL(38,0) | degenerate dim |
+| `order_ts`, `served_ts` | TIMESTAMP | event tijden |
+| `order_amount`, `order_tax_amount`, `order_discount_amount`, `order_total` | DECIMAL(38,4) | measures |
+| `time_to_serve_seconds` | BIGINT | derived measure: `served_ts - order_ts` |
 
-`year_month` is een echte DATE (eerste-van-de-maand), niet een string `'yyyy-MM'` — Databricks date-functions en BI-tools werken beter met DATE.
+### Tabelspec — `fact_sales_line`
 
-### Tabelspec — `sales_lines_wide`
+Regel-grain feitentabel. Eén rij per `order_detail_id` in `INTEGRATION.sales_line`.
 
-Alle kolommen uit `INTEGRATION.sales_line` plus deze afgeleide kolommen voor AI/BI consumption:
-
-| Afgeleide kolom | Type | Berekening |
+| Kolom | Type | Categorie |
 |---|---|---|
-| `order_date` | DATE | `CAST(order_ts AS DATE)` |
-| `order_hour` | INT | `HOUR(order_ts)` (0-23) |
-| `order_day_of_week` | STRING | `DATE_FORMAT(order_ts, 'EEEE')` ('Monday' etc.) |
-| `order_year_month` | DATE | first-of-month |
-| `shift_duration_minutes` | INT | `(parse(end) - parse(start)) / 60` |
-| `line_subtotal` | DECIMAL(38, 4) | `quantity * unit_price` (sanity-check vs `price`) |
+| Alle 8 `fact_order`-FK's + `dim_menu_item_key` | STRING | 9 FK's |
+| `order_id`, `order_detail_id`, `line_number` | DECIMAL(38,0) | degenerate dims |
+| `order_ts`, `served_ts` | TIMESTAMP | event tijden (gedenormaliseerd) |
+| `quantity`, `unit_price`, `price`, `order_item_discount_amount` | DECIMAL(38,4) | measures |
+| `line_subtotal` | DECIMAL(38,4) | derived: `quantity * unit_price` |
 
-**Liquid Clustering** staat aan op deze tabel (`CLUSTER BY (truck_id, location_id, order_date, order_currency)`) omdat dashboards en Genie verschillende combinaties van filterkolommen gebruiken — geen handmatige partition-keuze nodig.
+**Liquid Clustering:** `CLUSTER BY (dim_truck_key, dim_location_key, dim_date_key, dim_currency_key)` — dashboards en Genie filteren op verschillende combinaties van deze vier sleutels. Geen handmatige partition-keuze nodig.
 
 ### Workflow-integratie
 
@@ -376,31 +435,39 @@ setup
   ├─→ ingest_azurestorage_full
   └─→ ingest_azurestorage_incremental
        ↓
-       dlt_integration
+       dlt_integration              (DLT — 4 Streaming Tables in INTEGRATION)
         ↓
-        dlt_datamart                 (DLT pipeline_task)
+        apply_views                 (notebook — Silver sales_line view + 10 Datamart views)
+         ↓
+         dlt_datamart               (DLT — fact_sales_line MV met Liquid Clustering)
 ```
 
-`dlt_datamart` hangt af van `dlt_integration`. De DLT-pipeline zelf is gedefinieerd in `resources/dlt_datamart.yml`.
+Drie volgordelijke stappen na ingest:
+1. **`dlt_integration`** bouwt de Streaming Tables.
+2. **`apply_views`** (`views/07_apply_views.ipynb`) past alle plain SQL views toe — `sales_line` eerst (Silver), daarna de Datamart views. `fact_sales_line` MV in stap 3 leest van `sales_line` view, dus die moet hier al bestaan.
+3. **`dlt_datamart`** materialiseert `fact_sales_line` met Liquid Clustering. Eén MV in deze pipeline — alleen `datamart/fact_sales_line.sql`.
 
 ### Consumption-laag
 
-**AI/BI Dashboard** — `dashboards/tasty_bytes_sales.lvdash.json` is gecheckt-in en wordt automatisch ge-deployed via `resources/dashboard.yml`. Widgets:
-- Revenue trend (line chart) — uit `monthly_revenue_by_currency`
-- Top trucks by revenue (bar) — uit `daily_sales_by_truck`
-- Top locations by revenue (bar) — uit `daily_sales_by_location`
-- KPI card: totaal revenue + totaal orders
+**AI/BI Dashboard** — `dashboards/tasty_bytes_sales.lvdash.json` is gecheckt-in en wordt automatisch ge-deployed via `resources/dashboard.yml`. Alle widget-queries gebruiken `fact_order ⨝ dim_*` joins:
+- Revenue trend (line chart) — `fact_order ⨝ dim_date ⨝ dim_currency`
+- Top trucks by revenue (bar) — `fact_order ⨝ dim_truck`
+- Top locations by revenue (bar) — `fact_order ⨝ dim_location`
+- KPI cards — `SUM(order_total)` + `COUNT(*)` over `fact_order`
 
 **AI/BI Genie space** — post-deploy handmatig geconfigureerd (Genie spaces serializen nog niet schoon in DAB). De runbook-stap staat in `docs/demo_script.md`:
-- Maak een Genie space met `DATAMART.sales_lines_wide` als enige tabel
+- Maak een Genie space met `DATAMART.fact_sales_line` plus alle `DATAMART.dim_*`-tabellen
 - Voeg voorbeeldvragen toe ("Welke truck had vorige week de meeste revenue?", "Vergelijk revenue per uur van de dag tussen truck X en Y")
 
 ### Wat Gold specifiek demonstreert
 
-- **Materialised Views met auto-refresh** — declaratief gedefinieerde Gold-aggregaten die incrementeel verversen wanneer Silver verandert
-- **Liquid Clustering** op de wide-tabel — geen handmatige partition-keuze, Databricks past clustering automatisch aan op queries
+- **Kimball star schema in pure SQL DLT** — declaratieve `CREATE OR REFRESH MATERIALIZED VIEW`-statements voor 9 dims + 2 facts, geen Python in de Gold-laag
+- **SHA2-surrogate keys** — deterministisch, idempotent, NULL-safe via `COALESCE('__UNKNOWN__')`, geen IDENTITY-kolommen nodig
+- **Unknown-leden** — orders met NULL truck/location/discount/shift blijven zichtbaar via één gedeelde Unknown-key per dim
+- **Materialised Views met auto-refresh** — Silver-correcties propageren bij elke pipeline-run
+- **Liquid Clustering** op de fact-tabel — geen handmatige partition-keuze, Databricks past clustering automatisch aan op queries
 - **AI/BI Dashboard via DAB** — versioned dashboard-definitie deploys via `databricks bundle deploy`
-- **AI/BI Genie** — natural-language queries op `sales_lines_wide` (post-deploy setup)
+- **AI/BI Genie** — natural-language queries op de star (`fact_sales_line` + dims, post-deploy setup)
 
 ---
 
@@ -412,19 +479,37 @@ databricks-demo/
 ├── resources/                          # DAB resource definitions (YAML)
 │   ├── sqlserver.yml                   # Lakeflow Connect gateway + ingestion pipeline (geparkeerd)
 │   ├── sqlserver_job.yml               # Geplande Job voor SQL Server pipeline (geparkeerd)
-│   ├── dlt_integration.yml             # DLT pipeline definition voor Silver (INTEGRATION schema)
-│   ├── dlt_datamart.yml                # DLT pipeline definition voor Gold (DATAMART schema)
+│   ├── dlt_integration.yml             # DLT pipeline definition voor Silver (Streaming Tables)
+│   ├── dlt_datamart.yml                # DLT pipeline definition voor Gold (fact_sales_line MV)
 │   ├── dashboard.yml                   # DAB resource — deploys de AI/BI Dashboard
-│   └── demo_workflow.yml               # End-to-end Workflow (setup → ingest_* → dlt_integration → dlt_datamart)
+│   └── demo_workflow.yml               # End-to-end Workflow (setup → ingest_* → dlt_integration → apply_views → dlt_datamart)
 ├── config/
 │   └── 00_setup.ipynb                  # Catalog, schemas, volume én control table — alles in één
 ├── staging/
 │   ├── 02_ingest_azurestorage.ipynb    # Parquet inladen via control table (mode=full|incremental|both)
 │   └── schema_inspector.ipynb          # Diagnostisch — bron-schema's inspecteren
-├── integration/
-│   └── 05_silver_dlt_pipeline.ipynb    # DLT pipeline: 5 tabellen in INTEGRATION + quarantine
-├── datamart/
-│   └── 06_gold_dlt_pipeline.ipynb      # DLT pipeline: 4 Materialised Views in DATAMART
+├── integration/                        # DLT pipeline source folder — 4 .sql files (glob include)
+│   ├── order_header.sql                # Cleansed Streaming Table + APPLY CHANGES FROM SNAPSHOT
+│   ├── order_header_quarantine.sql     # Quarantine Streaming Table
+│   ├── order_detail.sql
+│   └── order_detail_quarantine.sql
+├── views/                              # Plain SQL views (niet-DLT) + orchestrator
+│   ├── 07_apply_views.ipynb            # Notebook task — itereert over integration/ + datamart/ en runt elk .sql bestand
+│   ├── integration/
+│   │   └── sales_line.sql              # Geïntegreerde header⨝detail view
+│   └── datamart/
+│       ├── dim_date.sql                # 9 dimensies …
+│       ├── dim_truck.sql
+│       ├── dim_location.sql
+│       ├── dim_customer.sql
+│       ├── dim_menu_item.sql
+│       ├── dim_currency.sql
+│       ├── dim_order_channel.sql
+│       ├── dim_shift.sql
+│       ├── dim_discount.sql
+│       └── fact_order.sql              # 1 fact als view
+├── datamart/                           # DLT pipeline source folder — 1 .sql file (glob include)
+│   └── fact_sales_line.sql             # Enige MV (Liquid Clustering) — leest sales_line view
 ├── dashboards/
 │   └── tasty_bytes_sales.lvdash.json   # AI/BI Dashboard definitie (auto-deploys via DAB)
 ├── demo_showcase/
@@ -493,11 +578,12 @@ Live voor een klant demonstreren dat één UPDATE in de control table het gedrag
 5. `staging/02_ingest_azurestorage.ipynb` — parquet inladen via control table (`mode=full|incremental|both`, `reset` widget)
 6. `resources/demo_workflow.yml` — Workflow met `setup → (ingest_full || ingest_incremental)`
 7. *(Geparkeerd)* `resources/sqlserver.yml` + `resources/sqlserver_job.yml` — Lakeflow Connect op `DEMO.STAGING_SQLSERVER`
-8. **Integration-laag** — `integration/05_silver_dlt_pipeline.ipynb` + `resources/dlt_integration.yml`. DLT pipeline met Expectations (warn/drop/fail), gepaarde `_quarantine` tabellen, type-fixes (string→decimal/timestamp, int-millis→`'HH:mm:ss'`), `apply_changes` vanuit Bronze CDF, geïntegreerde `sales_line` MV.
-9. **Datamart-laag** — `datamart/06_gold_dlt_pipeline.ipynb` + `resources/dlt_datamart.yml`. Vier Materialised Views in `DATAMART`: drie aggregaten (truck, location, currency-month) + één wide-tabel (`sales_lines_wide`) met Liquid Clustering voor AI/BI consumption.
-10. **AI/BI Dashboard** — `dashboards/tasty_bytes_sales.lvdash.json` + `resources/dashboard.yml`. Deploys via DAB met de pipeline.
-11. `demo_showcase/` notebooks — Time Travel, Audit Logs, Lineage
-12. `docs/demo_script.md` — handmatig demo-draaiboek schrijven (incl. Genie-space setup als post-deploy stap)
+8. **Integration-laag (DLT)** — `integration/*.sql` (4 bestanden, glob include in `resources/dlt_integration.yml`). Streaming Tables met Expectations (warn/drop/fail), gepaarde `_quarantine` tabellen, type-fixes (string→decimal/timestamp, int-millis→`'HH:mm:ss'`), `APPLY CHANGES FROM SNAPSHOT` voor uniforme full/incremental-handling.
+9. **Views-laag** — `views/integration/sales_line.sql` + `views/datamart/*.sql` (10 bestanden: 9 dims + `fact_order`). Toegepast door `views/07_apply_views.ipynb` als losse Workflow-task. Geen storage, altijd vers tegen Silver. SHA2-surrogate keys, NULL-safe via `COALESCE('__UNKNOWN__')`.
+10. **Datamart-laag (DLT)** — `datamart/fact_sales_line.sql` + `resources/dlt_datamart.yml` (glob include). Enige MV, met Liquid Clustering op de meest gefilterde FK-kolommen. Leest van `INTEGRATION.sales_line` view.
+11. **AI/BI Dashboard** — `dashboards/tasty_bytes_sales.lvdash.json` + `resources/dashboard.yml`. Deploys via DAB met de pipeline.
+12. `demo_showcase/` notebooks — Time Travel, Audit Logs, Lineage
+13. `docs/demo_script.md` — handmatig demo-draaiboek schrijven (incl. Genie-space setup als post-deploy stap)
 
 ---
 
