@@ -58,7 +58,7 @@ resources:
             pipeline_id: ${resources.pipelines.dlt_integration.id}
 
         - task_key: apply_views
-          description: "Standaard SQL views (Silver sales_line + 9 Datamart dim views). Niet-DLT, virtualisatie-laag."
+          description: "Orchestrator — roept 10 view-notebooks aan via dbutils.notebook.run() (sales_line + 9 dims). Niet-DLT, virtualisatie-laag."
           depends_on:
             - task_key: dlt_integration
           environment_key: demo_env

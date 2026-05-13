@@ -187,7 +187,7 @@ Silver levert de **Enterprise view**: gevalideerde, gestandaardiseerde en geïnt
 
 ### Eén DLT-pipeline + één view, vijf objecten in `INTEGRATION`
 
-De `integration/`-folder bevat vier SQL DLT-bestanden (`integration/*.sql`), opgepikt via `libraries: - glob: include: integration/*.sql` in `resources/dlt_integration.yml`. Daarnaast bestaat `INTEGRATION.sales_line` als standaard SQL view (niet binnen DLT — zie `views/integration/sales_line.sql`, toegepast door `views/07_apply_views.ipynb`).
+De `integration/`-folder bevat vier SQL DLT-bestanden (`integration/*.sql`), opgepikt via `libraries: - glob: include: integration/*.sql` in `resources/dlt_integration.yml`. Daarnaast bestaat `INTEGRATION.sales_line` als standaard SQL view in een eigen notebook (`views/integration/sales_line.ipynb`), opgeroepen door de `apply_views` orchestrator.
 
 | Object | Type | Beheerd door | Inhoud |
 |---|---|---|---|
@@ -195,7 +195,7 @@ De `integration/`-folder bevat vier SQL DLT-bestanden (`integration/*.sql`), opg
 | `INTEGRATION.order_header_quarantine` | Streaming Table | DLT pipeline | Schendende rijen + `failed_rules`-kolom |
 | `INTEGRATION.order_detail` | Streaming Table | DLT pipeline | Gecleaned `order_detail` |
 | `INTEGRATION.order_detail_quarantine` | Streaming Table | DLT pipeline | Schendende detail-rijen + `failed_rules`-kolom |
-| `INTEGRATION.sales_line` | **View** | `apply_views` notebook | Pure join `order_header ⨝ order_detail` — altijd vers, geen storage |
+| `INTEGRATION.sales_line` | **View** | `views/integration/sales_line.ipynb` (via `apply_views` orchestrator) | Pure join `order_header ⨝ order_detail` — altijd vers, geen storage |
 
 **Naamgeving:** kolomnamen worden snake_case + Engels (`ORDER_ID` → `order_id`, etc.). Silver is direct bruikbaar voor analisten zonder bron-jargon.
 
@@ -342,8 +342,9 @@ De Gold-laag is gesplitst over **twee beheermechanismen**, gekozen per object op
 | `DATAMART.fact_sales_line` | **MV** (Liquid Clustering) | `dlt_datamart` pipeline | Zwaarste tabel, profiteert van clustering |
 
 **Folders:**
-- `views/integration/sales_line.sql` — Silver view (zie §7)
-- `views/datamart/*.sql` — 9 Datamart dim-definities
+- `views/integration/sales_line.ipynb` — Silver view-notebook (zie §7)
+- `views/datamart/dim_*.ipynb` — 9 Datamart dim-notebooks
+- `views/07_apply_views.ipynb` — orchestrator die de 10 view-notebooks aanroept via `dbutils.notebook.run()`
 - `datamart/*.sql` — twee MV's (`fact_order`, `fact_sales_line`), draaien in DLT-pipeline `dlt_datamart`
 
 ### Sleutelkeuze: wanneer view, wanneer MV?
@@ -444,7 +445,7 @@ setup
 
 Drie volgordelijke stappen na ingest:
 1. **`dlt_integration`** bouwt de Streaming Tables.
-2. **`apply_views`** (`views/07_apply_views.ipynb`) past alle plain SQL views toe — `sales_line` eerst (Silver), daarna de 9 Datamart dim views. `fact_sales_line` MV in stap 3 leest van `sales_line` view, dus die moet hier al bestaan.
+2. **`apply_views`** (`views/07_apply_views.ipynb`) roept alle view-notebooks aan via `dbutils.notebook.run()` — `integration/sales_line` eerst (Silver), daarna de 9 `datamart/dim_*` notebooks. `fact_sales_line` MV in stap 3 leest van `sales_line` view, dus die moet hier al bestaan.
 3. **`dlt_datamart`** materialiseert beide feiten: `fact_order` (order-grain, plain MV op `INTEGRATION.order_header`) en `fact_sales_line` (regel-grain, Liquid Clustering). Twee MV's in deze pipeline — `datamart/fact_order.sql` + `datamart/fact_sales_line.sql`.
 
 ### Consumption-laag
@@ -493,20 +494,20 @@ databricks-demo/
 │   ├── order_header_quarantine.sql     # Quarantine Streaming Table
 │   ├── order_detail.sql
 │   └── order_detail_quarantine.sql
-├── views/                              # Plain SQL views (niet-DLT) + orchestrator
-│   ├── 07_apply_views.ipynb            # Notebook task — itereert over integration/ + datamart/ en runt elk .sql bestand
+├── views/                              # Plain SQL views (niet-DLT) — orchestrator + één notebook per view
+│   ├── 07_apply_views.ipynb            # Orchestrator-task — roept met dbutils.notebook.run() elk view-notebook aan
 │   ├── integration/
-│   │   └── sales_line.sql              # Geïntegreerde header⨝detail view
+│   │   └── sales_line.ipynb            # Geïntegreerde header⨝detail view (1 %sql cel)
 │   └── datamart/
-│       ├── dim_date.sql                # 9 dimensies …
-│       ├── dim_truck.sql
-│       ├── dim_location.sql
-│       ├── dim_customer.sql
-│       ├── dim_menu_item.sql
-│       ├── dim_currency.sql
-│       ├── dim_order_channel.sql
-│       ├── dim_shift.sql
-│       └── dim_discount.sql
+│       ├── dim_date.ipynb              # 9 dim-notebooks (elk 1 %sql cel) …
+│       ├── dim_truck.ipynb
+│       ├── dim_location.ipynb
+│       ├── dim_customer.ipynb
+│       ├── dim_menu_item.ipynb
+│       ├── dim_currency.ipynb
+│       ├── dim_order_channel.ipynb
+│       ├── dim_shift.ipynb
+│       └── dim_discount.ipynb
 ├── datamart/                           # DLT pipeline source folder — 2 .sql files (glob include)
 │   ├── fact_order.sql                  # Order-grain MV — leest INTEGRATION.order_header
 │   └── fact_sales_line.sql             # Regel-grain MV (Liquid Clustering) — leest sales_line view
@@ -579,7 +580,7 @@ Live voor een klant demonstreren dat één UPDATE in de control table het gedrag
 6. `resources/demo_workflow.yml` — Workflow met `setup → (ingest_full || ingest_incremental)`
 7. *(Geparkeerd)* `resources/sqlserver.yml` + `resources/sqlserver_job.yml` — Lakeflow Connect op `DEMO.STAGING_SQLSERVER`
 8. **Integration-laag (DLT)** — `integration/*.sql` (4 bestanden, glob include in `resources/dlt_integration.yml`). Streaming Tables met Expectations (warn/drop/fail), gepaarde `_quarantine` tabellen, type-fixes (string→decimal/timestamp, int-millis→`'HH:mm:ss'`), `APPLY CHANGES FROM SNAPSHOT` voor uniforme full/incremental-handling.
-9. **Views-laag** — `views/integration/sales_line.sql` + `views/datamart/*.sql` (9 dim-bestanden). Toegepast door `views/07_apply_views.ipynb` als losse Workflow-task. Geen storage, altijd vers tegen Silver. SHA2-surrogate keys, NULL-safe via `COALESCE('__UNKNOWN__')`.
+9. **Views-laag** — één notebook per view: `views/integration/sales_line.ipynb` + `views/datamart/dim_*.ipynb` (9 dims). Elke notebook heeft één `%sql CREATE OR REPLACE VIEW` cel met `CREATE WIDGET TEXT catalog DEFAULT "DEMO"; USE CATALOG ${catalog}` ervoor. `views/07_apply_views.ipynb` is een Python-orchestrator die ze achter elkaar uitvoert via `dbutils.notebook.run()` en de `catalog`-widget doorgeeft. Geen storage, altijd vers tegen Silver. SHA2-surrogate keys, NULL-safe via `COALESCE('__UNKNOWN__')`.
 10. **Datamart-laag (DLT)** — `datamart/*.sql` (2 feiten: `fact_order`, `fact_sales_line`) + `resources/dlt_datamart.yml` (glob include). `fact_order` is een plain MV op `INTEGRATION.order_header`; `fact_sales_line` heeft Liquid Clustering op de meest gefilterde FK-kolommen en leest van `INTEGRATION.sales_line` view.
 11. **AI/BI Dashboard** — `dashboards/tasty_bytes_sales.lvdash.json` + `resources/dashboard.yml`. Deploys via DAB met de pipeline.
 12. `demo_showcase/` notebooks — Time Travel, Audit Logs, Lineage
