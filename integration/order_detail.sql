@@ -3,7 +3,7 @@
 -- Pattern (per ADRs 0010, 0011, 0014, 0015, 0016):
 --   1. order_detail_src     : tagged MV with type-fixes, WA_* admin cols, WA_HASH,
 --                             failed_rules array and per-rule CONSTRAINT EXPECT tags.
---   2. DW_ORDER_DETAIL      : SCD2 Streaming Table via APPLY CHANGES STORED AS SCD TYPE 2
+--   2. DW_ORDER_DETAIL      : SCD2 Streaming Table via FLOW AUTO CDC STORED AS SCD TYPE 2
 --                             over STREAM table_changes() (CDF), with WK_ surrogate key.
 --   3. DWH_ORDER_DETAIL     : paired view exposing WA_FROMDATE / WA_UNTODATE / WA_ISCURR
 --                             + WKP_ (previous) / WKR_ (first) surrogate-key navigators.
@@ -62,7 +62,7 @@ FROM STREAM table_changes('${pipeline.catalog}.STAGING_AZURESTORAGE.STG_ORDER_DE
 WHERE _change_type IN ('insert', 'update_postimage', 'delete');
 
 -- ============================================================================
--- Object 2 — DW_ORDER_DETAIL: SCD2 Streaming Table via APPLY CHANGES
+-- Object 2 — DW_ORDER_DETAIL: SCD2 Streaming Table via FLOW AUTO CDC
 -- ============================================================================
 CREATE OR REFRESH STREAMING TABLE DW_ORDER_DETAIL (
   WK_ORDER_DETAIL BIGINT GENERATED ALWAYS AS IDENTITY,
@@ -82,9 +82,8 @@ CREATE OR REFRESH STREAMING TABLE DW_ORDER_DETAIL (
   CONSTRAINT order_detail_id_not_null EXPECT (order_detail_id IS NOT NULL) ON VIOLATION FAIL UPDATE
 )
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
-COMMENT 'Cleansed ORDER_DETAIL, SCD2 via APPLY CHANGES.';
-
-APPLY CHANGES INTO LIVE.DW_ORDER_DETAIL
+COMMENT 'Cleansed ORDER_DETAIL, SCD2 via AUTO CDC.'
+FLOW AUTO CDC
 FROM (
   SELECT * EXCEPT (failed_rules, _change_type)
   FROM STREAM(LIVE.order_detail_src)
