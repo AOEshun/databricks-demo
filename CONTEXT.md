@@ -226,7 +226,9 @@ Per entiteit declareert één `integration/<entiteit>.sql`-bestand vier objecten
 
 ### 1. Tagged source MV — `<entity>_src`
 
-Leest het CDF van de staging-tabel via `STREAM table_changes('staging_azurestorage.STG_<TABEL>', 1)`, filtert op `_change_type IN ('insert','update_postimage','delete')` om pre-image-rijen weg te gooien, doet type-fixes, mapt `SA_*` → `WA_*` admin (inclusief `WA_CRUD` afgeleid van `_change_type`), berekent `WA_HASH` over alle non-BK business-kolommen, en bouwt `failed_rules ARRAY<STRING>` via CASE-per-rule. Per drop-grade-regel staat één `CONSTRAINT ... EXPECT (NOT array_contains(failed_rules, '<rule>'))` zodat per-rule schendings-tellingen in het DLT event log verschijnen.
+Leest het CDF van de staging-tabel via `STREAM table_changes('staging_azurestorage.STG_<TABEL>', 1)`, filtert op `_change_type IN ('insert','update_postimage','delete')` om pre-image-rijen weg te gooien, doet type-fixes, mapt `SA_*` → `WA_*` admin (inclusief `WA_CRUD` afgeleid van `_change_type`), berekent `WA_HASH` (SHA2-256) over alle non-BK business-kolommen, en bouwt `failed_rules ARRAY<STRING>` via CASE-per-rule. Per drop-grade-regel staat één `CONSTRAINT ... EXPECT (NOT array_contains(failed_rules, '<rule>'))` zodat per-rule schendings-tellingen in het DLT event log verschijnen.
+
+**Belangrijke mapping:** `WA_CRUDDTS ← SA_CRUDDTS` (het staging-ingest-moment, ADR-0017) — **niet** `current_timestamp()`. `current_timestamp()` zou de integratie-verwerkingstijd vastleggen in plaats van de bron-ingest-tijd, wat een misleidende audit-trail oplevert.
 
 Voor Lakeflow Connect-bronnen leest dezelfde MV-vorm direct uit de LC-staging tabel en mapt `_change_type` → `WA_CRUD`; geen `SA_*`-mapping want LC levert die niet (ADR-0017). De bron-specifieke vertaling zit dus volledig in dit ene bestand (ADR-0009).
 
