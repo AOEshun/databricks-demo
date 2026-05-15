@@ -219,7 +219,7 @@ Per entiteit declareert één `integration/<entiteit>.sql`-bestand vier objecten
 | Object | Type | Beheerd door | Rol |
 |---|---|---|---|
 | `<entity>_src` | Materialised View (tagged source) | DLT-pipeline | Type-fixes, `SA_*`→`WA_*`-mapping, `WA_HASH`, `failed_rules ARRAY<STRING>`; per-rule `EXPECT`-constraints |
-| `DW_<TABEL>` | Streaming Table (SCD2) | DLT-pipeline | Historische storage; `APPLY CHANGES INTO ... STORED AS SCD TYPE 2`; gefilterd op `size(failed_rules)=0` |
+| `DW_<TABEL>` | Streaming Table (SCD2) | DLT-pipeline | Historische storage; `FLOW AUTO CDC ... STORED AS SCD TYPE 2`; gefilterd op `size(failed_rules)=0` |
 | `DWH_<TABEL>` | View | DLT-pipeline | Renaming + window-functions: `WA_FROMDATE`/`WA_UNTODATE`/`WA_ISCURR`/`WKP_*`/`WKR_*` |
 | `DWQ_<TABEL>` | Streaming Table (append-only) | DLT-pipeline | Afgekeurde rijen; gefilterd op `size(failed_rules)>0`; volledige `WA_*` + `failed_rules` + `_change_type` |
 | `integration.SALES_LINE` | View | `views/integration/sales_line.ipynb` (via `apply_views`) | Half-open SCD2-join `DWH_ORDER_HEADER ⨝ DWH_ORDER_DETAIL` |
@@ -276,7 +276,7 @@ WHERE _change_type IN ('insert', 'update_postimage', 'delete');
 
 ### 2. `DW_<TABEL>` Streaming Table — SCD2 storage
 
-Streaming Table met een `WK_<TABEL> BIGINT GENERATED ALWAYS AS IDENTITY`-surrogate (versie-niveau), populated via `APPLY CHANGES INTO ... STORED AS SCD TYPE 2` (ADR-0010). Databricks beheert `__START_AT` en `__END_AT` automatisch; deletes end-daten de vorige current-rij, geen tombstone-rij (ADR-0010 trade-off geaccepteerd). Schema-niveau-invarianten staan als fail-grade Expectation.
+Streaming Table met een `WK_<TABEL> BIGINT GENERATED ALWAYS AS IDENTITY`-surrogate (versie-niveau), populated via `FLOW AUTO CDC ... STORED AS SCD TYPE 2` (ADR-0010). Databricks beheert `__START_AT` en `__END_AT` automatisch; deletes end-daten de vorige current-rij, geen tombstone-rij (ADR-0010 trade-off geaccepteerd). Schema-niveau-invarianten staan als fail-grade Expectation.
 
 ```sql
 CREATE OR REFRESH STREAMING TABLE DW_ORDER_HEADER (
@@ -285,9 +285,8 @@ CREATE OR REFRESH STREAMING TABLE DW_ORDER_HEADER (
   -- … business-kolommen + WA_* admin …
   CONSTRAINT order_id_not_null EXPECT (order_id IS NOT NULL) ON VIOLATION FAIL UPDATE
 )
-TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');
-
-APPLY CHANGES INTO DW_ORDER_HEADER
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+FLOW AUTO CDC
 FROM (SELECT * FROM STREAM(order_header_src) WHERE size(failed_rules) = 0)
 KEYS (order_id)
 SEQUENCE BY _commit_timestamp
@@ -325,7 +324,7 @@ WHERE  array_contains(failed_rules, 'order_total_non_negative');
 `STG_*`-tabellen hebben CDF aan; de tagged source MV consumeert dat CDF via `STREAM table_changes('staging_<bron>.STG_<TABEL>', 1)`. Effect:
 - Full overschrijvingen in staging: ontbrekende rijen verschijnen als `_change_type = 'delete'`, nieuwe als `'insert'`, gewijzigde als `'update_preimage' + 'update_postimage'`.
 - Incremental appends: alleen nieuwe rijen als `'insert'`.
-- `APPLY CHANGES INTO ... STORED AS SCD TYPE 2 SEQUENCE BY _commit_timestamp APPLY AS DELETE WHEN WA_CRUD='D'` doet de declaratieve MERGE.
+- `FLOW AUTO CDC ... STORED AS SCD TYPE 2 SEQUENCE BY _commit_timestamp APPLY AS DELETE WHEN WA_CRUD='D'` doet de declaratieve MERGE.
 
 ### Quarantine-patroon (single-source-of-truth per entiteit)
 
@@ -384,7 +383,7 @@ Spark/Delta heeft geen native time-of-day type — de staging int-millis wordt d
 
 ### `WA_HASH` — reconciliatie, geen change-detection (ADR-0015)
 
-Elke `DW_`-rij draagt `WA_HASH = SHA2(CONCAT_WS('||', <non-BK business kolommen>), 256)` (ADR-0015 + ADR-0019). Berekend in de tagged source MV — quarantine-rijen dragen het dus ook. Doel: bron-systeem-reconciliatie en forensische signature, **niet** change-detection (`APPLY CHANGES INTO` doet zelf al kolom-niveau-vergelijking).
+Elke `DW_`-rij draagt `WA_HASH = SHA2(CONCAT_WS('||', <non-BK business kolommen>), 256)` (ADR-0015 + ADR-0019). Berekend in de tagged source MV — quarantine-rijen dragen het dus ook. Doel: bron-systeem-reconciliatie en forensische signature, **niet** change-detection (`FLOW AUTO CDC` doet zelf al kolom-niveau-vergelijking).
 
 ### Workflow-integratie
 
@@ -402,7 +401,7 @@ setup
 
 ### Wat de integration-laag specifiek demonstreert
 
-- **`APPLY CHANGES INTO ... STORED AS SCD TYPE 2`** voor declaratieve historie-opbouw — pure SQL, geen handmatige MERGE-statements
+- **`FLOW AUTO CDC ... STORED AS SCD TYPE 2`** voor declaratieve historie-opbouw — pure SQL, geen handmatige MERGE-statements
 - **Eén tagged source MV** met `failed_rules ARRAY<STRING>` als single-source-of-truth voor per-entiteit kwaliteitsregels
 - **Per-rule `EXPECT`-constraints** geven per-rule violation-counts in het DLT event log
 - **Gepaarde `DWQ_<TABEL>`** met volledige WA-context — demo-tijdse triage via `array_contains(failed_rules, '…')`
@@ -498,7 +497,7 @@ Header-zijde dims (`DIM_TRUCK`, `DIM_LOCATION`, `DIM_CUSTOMER`, `DIM_CURRENCY`, 
 | `MA_CHANGEDATE` | TIMESTAMP | `MAX(WA_CRUDDTS) FILTER (WHERE WA_CRUD <> 'C') PARTITION BY <BK>` — updates **én** deletes; NULL als entiteit alleen zijn initiële C-rij heeft |
 | `MA_ISDEL` | INT | `CASE WHEN latest-row.WA_UNTODATE <> TIMESTAMP '9999-12-31 00:00:00' THEN 1 ELSE 0 END` |
 
-Onder ADR-0010's `APPLY CHANGES INTO STORED AS SCD TYPE 2` mechanisme heeft een ge-deleted entiteit géén `WA_ISCURR=1`-rij; daarom selecteert de view de latest row by `WA_FROMDATE`, niet by `WA_ISCURR`. De `MA_CHANGEDATE`-filter `WA_CRUD <> 'C'` zorgt dat het delete-moment de "last changed"-tijd wordt.
+Onder ADR-0010's `FLOW AUTO CDC STORED AS SCD TYPE 2` mechanisme heeft een ge-deleted entiteit géén `WA_ISCURR=1`-rij; daarom selecteert de view de latest row by `WA_FROMDATE`, niet by `WA_ISCURR`. De `MA_CHANGEDATE`-filter `WA_CRUD <> 'C'` zorgt dat het delete-moment de "last changed"-tijd wordt.
 
 ### Tabelspec — SCD2 entity-dims (ADR-0013)
 
@@ -608,7 +607,7 @@ Per ADR-0020 lezen `FCT_*` MV's direct uit `DWH_<TABEL>` (niet uit `DIM_<NAAM>`)
 ### Wat de datamart-laag specifiek demonstreert
 
 - **Kimball star schema in pure SQL** — declaratieve `CREATE OR REPLACE VIEW` voor 9 dims + `CREATE OR REFRESH MATERIALIZED VIEW` voor 2 facts, geen Python in de datamart-laag
-- **IDENTITY-surrogates over hashes** — `MK_<NAAM> = WKR_<TABEL>` stabiel over updates/deletes, gegenereerd door `APPLY CHANGES INTO STORED AS SCD TYPE 2` (ADR-0010)
+- **IDENTITY-surrogates over hashes** — `MK_<NAAM> = WKR_<TABEL>` stabiel over updates/deletes, gegenereerd door `FLOW AUTO CDC STORED AS SCD TYPE 2` (ADR-0010)
 - **Latest-row-per-BK voor SCD1** — ge-deleted entiteiten blijven zichtbaar (ADR-0012)
 - **`MK_DATE = yyyymmdd INT`** — leesbaar, deterministisch, lexicografisch sorteerbaar (ADR-0018)
 - **Facts lezen `DWH_` direct** — geen tussentijdse dim-lookup, fact-build onafhankelijk van consumer dims (ADR-0020)
@@ -738,7 +737,7 @@ Live voor een klant demonstreren dat één UPDATE in de control table het gedrag
 5. `staging/02_ingest_azurestorage.ipynb` — parquet inladen via control table (`mode=full|incremental|both`, `reset` widget)
 6. `resources/demo_workflow.yml` — Workflow met `setup → (ingest_full || ingest_incremental)`
 7. *(Geparkeerd)* `resources/sqlserver.yml` + `resources/sqlserver_job.yml` — Lakeflow Connect op `staging_sqlserver`
-8. **Integration-laag (DLT)** — `integration/*.sql` (één bestand per entiteit, glob include in `resources/dlt_integration.yml`). Per entiteit: tagged source MV + `DW_<TABEL>` ST + `DWH_<TABEL>` view + `DWQ_<TABEL>` ST. `STREAM table_changes('staging_*.STG_<TABEL>', 1)` als bron, `APPLY CHANGES INTO ... STORED AS SCD TYPE 2 SEQUENCE BY _commit_timestamp APPLY AS DELETE WHEN WA_CRUD='D'`. Per-rule `EXPECT (NOT array_contains(failed_rules, '<rule>'))` constraints + fail-grade `EXPECT (... ) ON VIOLATION FAIL UPDATE`. Type-fixes (string→decimal/timestamp, int-millis→`'HH:mm:ss'`).
+8. **Integration-laag (DLT)** — `integration/*.sql` (één bestand per entiteit, glob include in `resources/dlt_integration.yml`). Per entiteit: tagged source MV + `DW_<TABEL>` ST + `DWH_<TABEL>` view + `DWQ_<TABEL>` ST. `STREAM table_changes('staging_*.STG_<TABEL>', 1)` als bron, `FLOW AUTO CDC ... STORED AS SCD TYPE 2 SEQUENCE BY _commit_timestamp APPLY AS DELETE WHEN WA_CRUD='D'`. Per-rule `EXPECT (NOT array_contains(failed_rules, '<rule>'))` constraints + fail-grade `EXPECT (... ) ON VIOLATION FAIL UPDATE`. Type-fixes (string→decimal/timestamp, int-millis→`'HH:mm:ss'`).
 9. **Views-laag** — één notebook per view: `views/integration/sales_line.ipynb` + `views/datamart/dim_*.ipynb` (9 dims). Elke notebook heeft één `%sql CREATE OR REPLACE VIEW` cel met `CREATE WIDGET TEXT catalog DEFAULT "DEMO"; USE CATALOG ${catalog}` ervoor. `views/07_apply_views.ipynb` is een Python-orchestrator die ze achter elkaar uitvoert via `dbutils.notebook.run()` en de `catalog`-widget doorgeeft. Geen storage, altijd vers tegen `DWH_*`. SCD1 latest-row-per-BK, `MK_<NAAM> = WKR_<TABEL>` (ADR-0012); `MK_DATE = yyyymmdd INT` voor `DIM_DATE` (ADR-0018).
 10. **Datamart-laag (DLT)** — `datamart/*.sql` (2 feiten: `fact_order`, `fact_sales_line`) + `resources/dlt_datamart.yml` (glob include). `FCT_ORDER` is een plain MV op `DWH_ORDER_HEADER WHERE WA_ISCURR=1`; `FCT_SALES_LINE` heeft Liquid Clustering op de meest gefilterde FK-kolommen en leest `DWH_ORDER_HEADER ⨝ DWH_ORDER_DETAIL` direct via een half-open SCD2-interval-join (ADR-0020).
 11. **AI/BI Dashboard** — `dashboards/tasty_bytes_sales.lvdash.json` + `resources/dashboard.yml`. Deploys via DAB met de pipeline.

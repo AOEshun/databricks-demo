@@ -50,7 +50,7 @@ resources:
               reset: "false"
 
         - task_key: dlt_integration
-          description: "Integration DLT pipeline — Streaming Tables in INTEGRATION via APPLY CHANGES FROM SNAPSHOT"
+          description: "Integration DLT pipeline — Streaming Tables in INTEGRATION via FLOW AUTO CDC (CDF-driven, SCD TYPE 2)"
           depends_on:
             - task_key: ingest_azurestorage_full
             - task_key: ingest_azurestorage_incremental
