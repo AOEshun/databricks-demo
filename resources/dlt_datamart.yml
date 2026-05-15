@@ -1,7 +1,7 @@
 resources:
   pipelines:
     dlt_datamart:
-      name: demo-gold-datamart
+      name: demo-datamart
 
       catalog: ${var.catalog}
       target: DATAMART
