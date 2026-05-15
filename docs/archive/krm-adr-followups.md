@@ -1,3 +1,5 @@
+> **Archived (2026-05-15):** This document pre-decomposed the KRM/ADR-conformance refactor into Follow-ups A/B/C while the work was being scoped. The work is now formally captured in `issues/prd.md` and delivered as a coordinated multi-PR effort. Preserved here for historical context.
+
 # KRM/ADR refactor — follow-ups
 
 ## Session context (so a fresh session can pick this up cold)
