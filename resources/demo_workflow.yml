@@ -50,7 +50,7 @@ resources:
               reset: "false"
 
         - task_key: dlt_integration
-          description: "Silver DLT pipeline — Streaming Tables in INTEGRATION via APPLY CHANGES FROM SNAPSHOT"
+          description: "Integration DLT pipeline — Streaming Tables in INTEGRATION via APPLY CHANGES FROM SNAPSHOT"
           depends_on:
             - task_key: ingest_azurestorage_full
             - task_key: ingest_azurestorage_incremental
@@ -68,8 +68,8 @@ resources:
               catalog: ${var.catalog}
 
         - task_key: dlt_datamart
-          description: "Gold DLT pipeline — fact_order MV + fact_sales_line MV (Liquid Clustering, leest sales_line view)"
+          description: "Datamart DLT pipeline — fact_order MV + fact_sales_line MV (Liquid Clustering, leest DWH_ tabellen direct)"
           depends_on:
-            - task_key: apply_views
+            - task_key: dlt_integration
           pipeline_task:
             pipeline_id: ${resources.pipelines.dlt_datamart.id}
