@@ -30,6 +30,6 @@ SELECT
 FROM ${pipeline.catalog}.INTEGRATION.DWH_ORDER_DETAIL d
 JOIN ${pipeline.catalog}.INTEGRATION.DWH_ORDER_HEADER h
   ON d.order_id = h.order_id
-  AND h.WA_FROMDATE <= h.order_ts
-  AND h.order_ts < h.WA_UNTODATE
+  AND h.WA_FROMDATE <= d.order_ts
+  AND d.order_ts < h.WA_UNTODATE
 WHERE d.WA_ISCURR = 1;
