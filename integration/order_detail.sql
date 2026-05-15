@@ -86,7 +86,7 @@ COMMENT 'Cleansed ORDER_DETAIL, SCD2 via AUTO CDC.'
 FLOW AUTO CDC
 FROM (
   SELECT * EXCEPT (failed_rules, _change_type)
-  FROM STREAM(LIVE.order_detail_src)
+  FROM STREAM(${pipeline.catalog}.INTEGRATION.order_detail_src)
   WHERE size(failed_rules) = 0
 )
 KEYS (order_detail_id)
@@ -109,7 +109,7 @@ SELECT
   COALESCE(__END_AT, TIMESTAMP '9999-12-31 00:00:00') AS WA_UNTODATE,
   CASE WHEN __END_AT IS NULL THEN 1 ELSE 0 END AS WA_ISCURR,
   WA_CRUDDTS, WA_CRUD, WA_SRC, WA_RUNID, WA_HASH
-FROM LIVE.DW_ORDER_DETAIL;
+FROM ${pipeline.catalog}.INTEGRATION.DW_ORDER_DETAIL;
 
 -- ============================================================================
 -- Object 4 — DWQ_ORDER_DETAIL: quarantine for rows failing >=1 drop-grade rule
@@ -123,5 +123,5 @@ SELECT
   WA_CRUDDTS, WA_CRUD, WA_SRC, WA_RUNID, WA_HASH,
   failed_rules,
   _change_type
-FROM STREAM(LIVE.order_detail_src)
+FROM STREAM(${pipeline.catalog}.INTEGRATION.order_detail_src)
 WHERE size(failed_rules) > 0;
