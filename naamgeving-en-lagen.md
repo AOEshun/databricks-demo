@@ -1,10 +1,12 @@
 # Naamgeving en Lagen — Instructies voor Claude Code
 
-> **Doel van dit document**: Claude Code gebruikt dit bestand als enige bron van waarheid bij het genereren van Databricks notebooks (`.ipynb`) voor het opbouwen van Staging-, Integration- en Datamart-lagen. Alle regels in dit document zijn bindend. Wijk er niet van af zonder expliciete instructie van de gebruiker.
+> **Note (2026-05-15):** This document is now a cheat-sheet of layer + naming primitives. Binding decisions on SCD1/SCD2 mechanics, DW/DWH/DWQ shape, fact source, and admin column semantics live in `docs/adr/0010-*.md` through `docs/adr/0020-*.md`. The pruned sections below cross-reference the ADR that governs each topic. Earlier §2.6 SCD1 formulas have been removed — see [ADR-0012](docs/adr/0012-scd1-dim-views-source-from-latest-row.md).
+
+> **Doel van dit document**: oorspronkelijk dé bron van waarheid voor naamgeving en layering. Vandaag een naslagdocument voor de KRM-primitieven (`SA_*`, `WA_*`, `WK_`, `WKR_`, `MK_`, `MA_*`, etc.); voor bindende ontwerpbeslissingen prevaleren de ADR's.
 
 ---
 
-## 1. Architectuur in één oogopslag
+## 1. Architectuur in één oogopslag — zie ADR-0010, ADR-0011, ADR-0016, ADR-0020
 
 ```
 ┌──────────────────────┐    ┌──────────────────────┐    ┌──────────────────────┐
@@ -13,14 +15,14 @@
 │                      │    │                      │    │                      │
 │  STG_<TABEL>         │    │  DW_<TABEL>  (tabel) │    │  DIM_<NAAM>  (view)  │
 │  Delta + MERGE       │    │  DWH_<TABEL> (view)  │    │  FCT_<NAAM>  (table) │
+│                      │    │  DWQ_<TABEL> (tabel) │    │                      │
 └──────────────────────┘    └──────────────────────┘    └──────────────────────┘
 ```
 
-**Deployment**: Alles draait in **Lakeflow Declarative Pipelines (DLT)** op **serverless compute**. Claude Code mag geen constructies gebruiken die buiten serverless werken (geen RDD API, geen DBFS root mounts, geen init scripts).
-
-**Input voor Claude Code**: YAML bestanden in `bronnen/<bronsysteem>/<tabel>.yml` en `datamart/<fct_naam>.yml`.
-
-**Output van Claude Code**: Python `.ipynb` notebooks met `%sql` magic cells in `notebooks/{staging,integration,datamart}/`.
+- DW/DWH-mechaniek (`APPLY CHANGES INTO STORED AS SCD TYPE 2`, beheer van `__START_AT`/`__END_AT`, rename naar `WA_FROMDATE`/`WA_UNTODATE`): zie [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md).
+- Quality-routing naar `DWQ_<TABEL>`: zie [ADR-0011](docs/adr/0011-quality-failed-rows-route-to-paired-dwq-table.md).
+- Eén canonieke `DW_<TABEL>` per entiteit (niet per bron): zie [ADR-0016](docs/adr/0016-integration-entities-are-canonical-not-per-source.md).
+- Pipeline-topologie (Workflow over per-layer DLT pipelines, `DIM_*` als plain UC-views): zie [ADR-0020](docs/adr/0020-pipeline-topology-one-workflow-over-per-layer-dlt-pipelines.md).
 
 ---
 
@@ -37,13 +39,14 @@
 
 Multi-environment (dev/tst/prod) wordt **niet** via catalog-naam afgehandeld in dit document — dat regelt **Databricks Asset Bundles (DAB)** via variabele-substitutie. De notebooks zelf zijn omgeving-agnostisch; ze lezen de catalog uit een widget.
 
-### 2.2 Object-naamgeving (tabellen, views, kolommen)
+### 2.2 Object-naamgeving (tabellen, views, kolommen) — zie ADR-0017
 
 | Object | Prefix | Casing | Voorbeeld |
 |---|---|---|---|
 | Staging tabel | `STG_` | HOOFDLETTERS | `STG_KLANT` |
 | DW historische tabel | `DW_` | HOOFDLETTERS | `DW_KLANT` |
 | DWH historische view | `DWH_` | HOOFDLETTERS | `DWH_KLANT` |
+| DWQ quarantine tabel | `DWQ_` | HOOFDLETTERS | `DWQ_KLANT` |
 | Datamart dimensie view | `DIM_` | HOOFDLETTERS | `DIM_KLANT` |
 | Datamart fact tabel | `FCT_` | HOOFDLETTERS | `FCT_SALES` |
 
@@ -51,23 +54,28 @@ Multi-environment (dev/tst/prod) wordt **niet** via catalog-naam afgehandeld in 
 - **Administratie- en sleutelvelden**: HOOFDLETTERS volgens onderstaande prefixen
 - **Business-kolommen uit bron**: behoud exact de casing zoals in bron (`klantcode`, `Klantnaam`, `boekdatum`)
 
-### 2.3 Veld-prefixen
+Voor Lakeflow Connect-bronnen geldt een uitzondering op de `SA_*`-kolommen: zie [ADR-0017](docs/adr/0017-lakeflow-connect-staging-tables-do-not-carry-sa-admin-columns.md).
+
+### 2.3 Veld-prefixen — zie ADR-0013, ADR-0014, ADR-0019
 
 | Prefix | Laag | Betekenis | Voorbeeld |
 |---|---|---|---|
 | `WK_<TABEL>` | Integration | Unieke surrogaatsleutel (identity) van entiteit `<TABEL>` | `WK_KLANT` |
 | `WK_REF_BUS_<REF_TABEL>` | Integration | Business key van gerefereerde tabel `<REF_TABEL>` | `WK_REF_BUS_MEDEWERKER` |
-| `WK_REF_HASH_<REF_TABEL>` | Integration | Hash van business key van gerefereerde tabel | `WK_REF_HASH_MEDEWERKER` |
+| `WK_REF_HASH_<REF_TABEL>` | Integration | Hash (SHA2-256) van business key van gerefereerde tabel | `WK_REF_HASH_MEDEWERKER` |
 | `WKP_<TABEL>` | Integration (DWH-view) | Vorige versie van `WK_<TABEL>` (LAG) | `WKP_KLANT` |
 | `WKR_<TABEL>` | Integration (DWH-view) | Eerste versie van `WK_<TABEL>` (FIRST_VALUE) | `WKR_KLANT` |
-| `WA_*` | Integration | Administratieveld DW-laag | zie 2.4 |
+| `WA_*` | Integration | Administratieveld DW-laag | zie 2.5 |
 | `SA_*` | Staging | Administratieveld Staging-laag | zie 2.4 |
-| `MK_<TABEL>` | Datamart | Datamart sleutel (FK naar dimensie) | `MK_KLANT` |
-| `MA_*` | Datamart | Administratieveld datamart | zie 2.6 |
+| `MK_<NAAM>` | Datamart | Datamart sleutel (FK naar dimensie) | `MK_KLANT` |
+| `MA_*` | Datamart | Administratieveld datamart | zie ADR-0012 / ADR-0013 |
 
-### 2.4 Verplichte administratie-kolommen — Staging
+- Geen self-side `WKR_HASH_<TABEL>` in DWH-views: zie [ADR-0014](docs/adr/0014-no-self-side-bk-hash-column-in-dwh-views.md).
+- Alle hashes gebruiken `SHA2(<input>, 256)`: zie [ADR-0019](docs/adr/0019-all-hash-columns-use-sha2-256.md).
 
-Elke `STG_<TABEL>` heeft de volgende `SA_*` kolommen:
+### 2.4 Verplichte administratie-kolommen — Staging (Auto Loader-bronnen)
+
+Elke `STG_<TABEL>` die via Auto Loader binnenkomt heeft de volgende `SA_*` kolommen:
 
 | Kolom | Type | Betekenis |
 |---|---|---|
@@ -75,9 +83,11 @@ Elke `STG_<TABEL>` heeft de volgende `SA_*` kolommen:
 | `SA_SRC` | STRING | Bronsysteem identificatie (matcht `source_system` in YAML) |
 | `SA_RUNID` | STRING | ETL run identifier (komt uit widget) |
 
-### 2.5 Verplichte administratie-kolommen — DW (Integration)
+Voor Lakeflow Connect-bronnen ontbreken deze kolommen — daar worden `_change_type`, `_change_version`, `_commit_timestamp` van LC direct in de integration-laag vertaald naar `WA_*`. Bindende spec: [ADR-0017](docs/adr/0017-lakeflow-connect-staging-tables-do-not-carry-sa-admin-columns.md).
 
-Elke `DW_<TABEL>` heeft minimaal de volgende kolommen. De `__START_AT` en `__END_AT` worden door `APPLY CHANGES INTO` beheerd; in de `DWH_<TABEL>` view worden ze hernoemd naar de Axians-conventies.
+### 2.5 Verplichte administratie-kolommen — DW (Integration) — zie ADR-0010, ADR-0015
+
+`__START_AT` en `__END_AT` worden door `APPLY CHANGES INTO` beheerd; in de `DWH_<TABEL>` view worden ze hernoemd naar de Axians-conventies.
 
 **Op DW_-tabel zelf** (gevoed door `APPLY CHANGES INTO`):
 
@@ -88,12 +98,12 @@ Elke `DW_<TABEL>` heeft minimaal de volgende kolommen. De `__START_AT` en `__END
 | `__END_AT` | TIMESTAMP | Door Databricks beheerd — wordt `WA_UNTODATE` in view |
 | `WA_CRUDDTS` | TIMESTAMP | Moment van laden in DW |
 | `WA_CRUD` | STRING(1) | `C`reate / `U`pdate / `D`elete (uit CDF `_change_type`) |
-| `WA_SRC` | STRING | Bronsysteem |
+| `WA_SRC` | STRING | Bronsysteem (per-row provenance — zie ADR-0016) |
 | `WA_RUNID` | STRING | ETL run identifier |
-| `WA_HASH` | STRING | Hash van alle non-BK business-kolommen (audit / reconciliation) |
-| _business kolommen_ | _div._ | Alle kolommen uit YAML |
-| `WK_REF_BUS_<REF>` | _als bron-BK_ | Per `foreign_keys` entry in YAML |
-| `WK_REF_HASH_<REF>` | STRING | Hash van de BK van gerefereerde tabel |
+| `WA_HASH` | STRING | SHA2-256 van non-BK business-kolommen — bedoeld voor reconciliation, niet voor change-detection (zie [ADR-0015](docs/adr/0015-wa-hash-is-kept-for-source-reconciliation-not-change-detection.md)) |
+| _business kolommen_ | _div._ | Alle entity-kolommen |
+| `WK_REF_BUS_<REF>` | _als bron-BK_ | Per `foreign_keys`-relatie |
+| `WK_REF_HASH_<REF>` | STRING | SHA2-256 van de BK van gerefereerde tabel |
 
 **In DWH_<TABEL>-view** (bovenop DW_<TABEL>):
 
@@ -106,34 +116,13 @@ Elke `DW_<TABEL>` heeft minimaal de volgende kolommen. De `__START_AT` en `__END
 | `WKP_<TABEL>` | `LAG(WK_<TABEL>) OVER (PARTITION BY <BK> ORDER BY __START_AT)` | Vorige versie |
 | `WKR_<TABEL>` | `FIRST_VALUE(WK_<TABEL>) OVER (PARTITION BY <BK> ORDER BY __START_AT)` | Eerste versie |
 
-### 2.6 Verplichte administratie-kolommen — Datamart
-
-**Voor SCD Type 2 dimensies** (`DIM_<NAAM>` view):
-
-| Kolom | Bron | Betekenis |
-|---|---|---|
-| `MK_<TABEL>` | `WK_<TABEL>` | Datamart sleutel (= surrogaat van DW) |
-| `MK_ROOT` | `WKR_<TABEL>` | Eerste versie van entiteit (groepeert versies) |
-| _business kolommen_ | — | Doorgegeven |
-| `MA_FROM` | `WA_FROMDATE` | Aanvang geldigheid |
-| `MA_UNTO` | `WA_UNTODATE` | Einde geldigheid |
-| `MA_ISCURR` | `WA_ISCURR` | Huidige versie indicator |
-
-**Voor SCD Type 1 dimensies** (`DIM_<NAAM>` view, alleen `WA_ISCURR = 1`):
-
-| Kolom | Bron | Betekenis |
-|---|---|---|
-| `MK_<TABEL>` | `WK_<TABEL>` | Datamart sleutel |
-| _business kolommen_ | — | Doorgegeven |
-| `MA_CREATEDATE` | min `WA_CRUDDTS` per entiteit | Aanmaakdatum |
-| `MA_CHANGEDATE` | max `WA_CRUDDTS` waar `WA_CRUD = 'U'` | Laatste wijzigingsmoment (NULL als nooit) |
-| `MA_ISDEL` | `CASE WHEN WA_CRUD = 'D' THEN 1 ELSE 0 END` | Verwijderd-indicator |
-
-**Voor feittabellen** (`FCT_<NAAM>`): geen verplichte `MA_*` kolommen, wel `MK_*` per dimensie-FK.
+### 2.6 SCD1-formules — zie [ADR-0012](docs/adr/0012-scd1-dim-views-source-from-latest-row.md) voor bindende spec
 
 ---
 
-## 3. Input: YAML structuur
+## 3. Input: YAML structuur — zie ADR-0009 (informationeel)
+
+> **Note**: [ADR-0009](docs/adr/0009-entity-structure-lives-in-the-sql.md) verbiedt een machine-leesbaar entity-registry. Entity-structuur (kolommen, BK's, FK's, datamart-inclusie) leeft in de DLT-SQL en in `CONTEXT.md`. Deze sectie is bewaard voor historische context; YAML-gedreven codegeneratie is **niet** de huidige aanpak.
 
 ### 3.1 Bron-tabel YAML — `bronnen/<bronsysteem>/<tabel>.yml`
 
@@ -180,23 +169,21 @@ fact_name: FCT_SALES
 grain: "Eén rij per verkoopregel per boekdatum"
 
 source:
-  primary: DW_SALES_LINE
-  joins:                               # optioneel — extra DW_-tabellen mee-joinen
-    - table: DW_SALES_ORDER
+  primary: DWH_SALES_LINE              # facts lezen uit DWH_ (ADR-0020), niet uit DIM_
+  joins:                               # optioneel — extra DWH_-tabellen mee-joinen
+    - table: DWH_SALES_ORDER
       on: order_id
 
-dimensions:                            # FK-resolutie naar DIM_-tabellen
+dimensions:                            # FK-resolutie op WKR_<REF> uit DWH_
   - dim: DIM_KLANT
     fact_column: MK_KLANT
     join_on: klant_id                  # BK-kolom in source
-    temporal_column: boekdatum         # voor SCD2: welke datum bepaalt versie
   - dim: DIM_PRODUCT
     fact_column: MK_PRODUCT
     join_on: product_id
-    temporal_column: boekdatum
-  - dim: DIM_DATUM
+  - dim: DIM_DATE                      # zie ADR-0018
     fact_column: MK_BOEKDAT
-    join_on: boekdatum                 # date-dim: geen temporal_column nodig
+    join_on: boekdatum
 
 measures:
   - name: OMZET
@@ -217,7 +204,7 @@ incremental:
 
 Elke notebook is **één Python `.ipynb`** in `notebooks/<laag>/<lowercase_tabelnaam>.ipynb` met de volgende vaste structuur:
 
-1. **Markdown header cell**: titel + verwijzing naar YAML
+1. **Markdown header cell**: titel + verwijzing naar bron-SQL/CONTEXT.md
 2. **Python cell**: widget-definities + lezen van parameters
 3. **Markdown cell** per object dat aangemaakt wordt
 4. **`%sql` cell** per `CREATE STREAMING TABLE` / `CREATE OR REFRESH STREAMING TABLE` / `CREATE OR REPLACE VIEW` statement
@@ -240,34 +227,7 @@ run_id = dbutils.widgets.get("run_id")
 
 ### 5.1 Staging — `notebooks/staging/stg_klant.ipynb`
 
-Gegenereerd vanuit `bronnen/ms_crm/klant.yml`.
-
-**Cell 1 (markdown)**:
-```markdown
-# Staging — STG_KLANT
-Gegenereerd vanuit `bronnen/ms_crm/klant.yml`. **Niet handmatig bewerken** — wijzig de YAML en regenereer.
-```
-
-**Cell 2 (Python — widgets)**:
-```python
-dbutils.widgets.text("catalog", "demo")
-dbutils.widgets.text("source_system", "ms_crm")
-dbutils.widgets.text("run_id", "")
-
-catalog = dbutils.widgets.get("catalog")
-source_system = dbutils.widgets.get("source_system")
-run_id = dbutils.widgets.get("run_id")
-
-spark.conf.set("c.catalog", catalog)
-spark.conf.set("c.source_system", source_system)
-spark.conf.set("c.run_id", run_id)
-```
-
-**Cell 3 (markdown)**:
-```markdown
-## STG_KLANT — streaming table met MERGE op business key
-CDF staat aan zodat downstream lagen wijzigingen kunnen lezen.
-```
+Auto Loader-bron. Voor Lakeflow Connect-bronnen wijken de admin-kolommen af (zie [ADR-0017](docs/adr/0017-lakeflow-connect-staging-tables-do-not-carry-sa-admin-columns.md)).
 
 **Cell 4 (`%sql`)**:
 ```sql
@@ -295,34 +255,11 @@ COLUMNS klantcode, klantnaam, ingangsdatum,
 STORED AS SCD TYPE 1;
 ```
 
-> **Let op**: `APPLY CHANGES INTO ... STORED AS SCD TYPE 1` doet in Staging een upsert (huidige stand per BK). De **geschiedenis** wordt pas opgebouwd in de DW-laag, omdat alle versies tot dan via CDF beschikbaar zijn.
+> **Let op**: De **geschiedenis** wordt pas opgebouwd in de DW-laag — zie [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md).
 
 ### 5.2 Integration — `notebooks/integration/dw_klant.ipynb`
 
-Bevat **beide**: `DW_KLANT` (streaming table met SCD2) én `DWH_KLANT` (view).
-
-**Cell 1 (markdown)**:
-```markdown
-# Integration — DW_KLANT + DWH_KLANT
-Gegenereerd vanuit `bronnen/ms_crm/klant.yml`.
-- `DW_KLANT`: streaming table, SCD2 via `APPLY CHANGES INTO`, surrogaat via Identity
-- `DWH_KLANT`: view die Axians-conventies herstelt (WA_FROMDATE, WA_UNTODATE, WA_ISCURR, WKP_, WKR_)
-```
-
-**Cell 2 (Python — widgets)**:
-```python
-dbutils.widgets.text("catalog", "demo")
-dbutils.widgets.text("source_system", "ms_crm")
-dbutils.widgets.text("run_id", "")
-
-catalog = dbutils.widgets.get("catalog")
-source_system = dbutils.widgets.get("source_system")
-run_id = dbutils.widgets.get("run_id")
-
-spark.conf.set("c.catalog", catalog)
-spark.conf.set("c.source_system", source_system)
-spark.conf.set("c.run_id", run_id)
-```
+Bevat `DW_KLANT` (streaming table met SCD2) én `DWH_KLANT` (view). Bindende mechaniek: [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md). Bij quality-failures route via tagged MV naar `DWQ_KLANT`: [ADR-0011](docs/adr/0011-quality-failed-rows-route-to-paired-dwq-table.md).
 
 **Cell 3 (`%sql` — DW_KLANT)**:
 ```sql
@@ -363,6 +300,7 @@ FROM STREAM(
   WHERE _change_type IN ('insert', 'update_postimage', 'delete')
 )
 KEYS (klantcode)
+APPLY AS DELETE WHEN _change_type = 'delete'
 SEQUENCE BY _commit_timestamp
 COLUMNS klantcode, klantnaam, ingangsdatum,
         WA_CRUDDTS, WA_CRUD, WA_SRC, WA_RUNID, WA_HASH
@@ -393,20 +331,7 @@ FROM ${c.catalog}.integration.DW_KLANT;
 
 ### 5.3 Datamart Type 2 — `notebooks/datamart/dim_klant.ipynb`
 
-Voor `scd_type: 2` in de YAML.
-
-**Cell 1 (markdown)**:
-```markdown
-# Datamart — DIM_KLANT (SCD Type 2)
-View op `DWH_KLANT`. Bevat alle versies. Joins vanuit feittabellen gebeuren temporeel op `MA_FROM`/`MA_UNTO`.
-```
-
-**Cell 2 (Python — widgets)**:
-```python
-dbutils.widgets.text("catalog", "demo")
-catalog = dbutils.widgets.get("catalog")
-spark.conf.set("c.catalog", catalog)
-```
+Voor `scd_type: 2`. Bindende spec: [ADR-0013](docs/adr/0013-scd2-dim-views-expose-every-version.md) (toont elke versie; `MK_<NAAM>` ← `WK_<TABEL>`; `MK_ROOT` ← `WKR_<TABEL>`).
 
 **Cell 3 (`%sql` — DIM_KLANT view)**:
 ```sql
@@ -426,36 +351,44 @@ FROM ${c.catalog}.integration.DWH_KLANT;
 
 ### 5.4 Datamart Type 1 — `notebooks/datamart/dim_product.ipynb`
 
-Voor `scd_type: 1` in de YAML.
+Voor `scd_type: 1`. Bindende spec: [ADR-0012](docs/adr/0012-scd1-dim-views-source-from-latest-row.md). Drie correcties t.o.v. eerdere §2.6:
+- Source = **latest row per BK by `WA_FROMDATE`**, niet `WA_ISCURR = 1` (anders verdwijnen verwijderde entiteiten);
+- `MK_<NAAM>` = `WKR_<TABEL>` (root surrogaat, stabiel over alle versies), niet `WK_<TABEL>`;
+- `MA_CHANGEDATE` = `MAX(WA_CRUDDTS)` waar `WA_CRUD <> 'C'` (updates **en** deletes tellen mee), niet alleen `WA_CRUD = 'U'`.
 
 **Cell 3 (`%sql` — DIM_PRODUCT view)**:
 ```sql
 %sql
 CREATE OR REPLACE VIEW ${c.catalog}.datamart.DIM_PRODUCT AS
-WITH historie AS (
+WITH ranked AS (
+  SELECT
+    d.*,
+    ROW_NUMBER() OVER (PARTITION BY productcode ORDER BY WA_FROMDATE DESC) AS rn
+  FROM ${c.catalog}.integration.DWH_PRODUCT d
+),
+historie AS (
   SELECT
     productcode,
-    MIN(WA_CRUDDTS)                                    AS MA_CREATEDATE,
-    MAX(CASE WHEN WA_CRUD = 'U' THEN WA_CRUDDTS END)   AS MA_CHANGEDATE,
-    MAX(CASE WHEN WA_CRUD = 'D' THEN 1 ELSE 0 END)     AS MA_ISDEL
+    MIN(WA_CRUDDTS)                                              AS MA_CREATEDATE,
+    MAX(CASE WHEN WA_CRUD <> 'C' THEN WA_CRUDDTS END)            AS MA_CHANGEDATE
   FROM ${c.catalog}.integration.DWH_PRODUCT
   GROUP BY productcode
 )
 SELECT
-  d.WK_PRODUCT  AS MK_PRODUCT,
-  d.productcode,
-  d.productnaam,
+  r.WKR_PRODUCT  AS MK_PRODUCT,
+  r.productcode,
+  r.productnaam,
   h.MA_CREATEDATE,
   h.MA_CHANGEDATE,
-  h.MA_ISDEL
-FROM ${c.catalog}.integration.DWH_PRODUCT d
-JOIN historie h ON h.productcode = d.productcode
-WHERE d.WA_ISCURR = 1;
+  CASE WHEN r.WA_UNTODATE <> TIMESTAMP '9999-12-31 00:00:00' THEN 1 ELSE 0 END AS MA_ISDEL
+FROM ranked r
+JOIN historie h ON h.productcode = r.productcode
+WHERE r.rn = 1;
 ```
 
 ### 5.5 Fact tabel — `notebooks/datamart/fct_sales.ipynb`
 
-Gegenereerd vanuit `datamart/fct_sales.yml`. Toont temporele join voor SCD2-dim en directe join voor SCD1/date-dim.
+Facts lezen direct uit `DWH_<TABEL>` en projecteren `WKR_<TABEL>` als `MK_<NAAM>`, zodat de fact-build niet afhangt van de DIM-views (zie [ADR-0020](docs/adr/0020-pipeline-topology-one-workflow-over-per-layer-dlt-pipelines.md)). `DIM_DATE` is een view met `MK_DATE = yyyymmdd::INT` (zie [ADR-0018](docs/adr/0018-dim-date-is-a-generated-calendar-view-keyed-by-yyyymmdd.md)).
 
 **Cell 3 (`%sql` — FCT_SALES streaming table)**:
 ```sql
@@ -474,14 +407,14 @@ COMMENT 'Verkoopfeiten — grain: één rij per verkoopregel per boekdatum';
 APPLY CHANGES INTO ${c.catalog}.datamart.FCT_SALES
 FROM STREAM(
   SELECT
-    -- date dimensie: directe join op datum-key
+    -- date dimensie: directe join op datum-key (yyyymmdd::INT — ADR-0018)
     date_format(s.boekdatum, 'yyyyMMdd')::INT AS MK_BOEKDAT,
 
-    -- klant dimensie: temporele join (SCD Type 2)
-    k.MK_KLANT,
+    -- klant dimensie: WKR_ uit DWH levert het stabiele root-surrogaat
+    k.WKR_KLANT  AS MK_KLANT,
 
-    -- product dimensie: temporele join (SCD Type 2)
-    p.MK_PRODUCT,
+    -- product dimensie: WKR_ uit DWH
+    p.WKR_PRODUCT AS MK_PRODUCT,
 
     -- measures
     s.regel_totaal AS OMZET,
@@ -489,13 +422,15 @@ FROM STREAM(
 
     s.WA_CRUDDTS,
     s._commit_timestamp
-  FROM STREAM table_changes('${c.catalog}.integration.DW_SALES_LINE', 0) s
-  LEFT JOIN ${c.catalog}.datamart.DIM_KLANT k
+  FROM STREAM table_changes('${c.catalog}.integration.DWH_SALES_LINE', 0) s
+  LEFT JOIN ${c.catalog}.integration.DWH_KLANT k
     ON k.klantcode = s.klant_id
-   AND s.boekdatum >= k.MA_FROM
-   AND s.boekdatum <  k.MA_UNTO
-  LEFT JOIN ${c.catalog}.datamart.DIM_PRODUCT p
+   AND s.boekdatum >= k.WA_FROMDATE
+   AND s.boekdatum <  k.WA_UNTODATE
+  LEFT JOIN ${c.catalog}.integration.DWH_PRODUCT p
     ON p.productcode = s.product_id
+   AND s.boekdatum >= p.WA_FROMDATE
+   AND s.boekdatum <  p.WA_UNTODATE
   WHERE s._change_type IN ('insert', 'update_postimage')
 )
 KEYS (MK_BOEKDAT, MK_KLANT, MK_PRODUCT)
@@ -503,61 +438,49 @@ SEQUENCE BY _commit_timestamp
 STORED AS SCD TYPE 1;
 ```
 
-> **Belangrijk**: De temporele join gebruikt `>= MA_FROM AND < MA_UNTO` (half-open interval) om dubbele matches op grensmomenten te voorkomen.
+> **Belangrijk**: De temporele join gebruikt `>= WA_FROMDATE AND < WA_UNTODATE` (half-open interval) om dubbele matches op grensmomenten te voorkomen.
 
 ---
 
 ## 6. Regels voor Claude Code bij genereren
 
+> **Note**: De codegen-georiënteerde regels (YAML → notebooks) hieronder zijn behouden voor historische context. [ADR-0009](docs/adr/0009-entity-structure-lives-in-the-sql.md) verbiedt een YAML-gedreven entity-registry; entity-structuur leeft in de DLT-SQL. Lees deze sectie daarom als naslag, niet als bindende workflow.
+
 ### 6.1 Algemeen
-1. **Lees altijd eerst de relevante YAML(s)**. Verzin nooit kolommen, types, of relaties die er niet in staan.
-2. **Genereer altijd .ipynb format** (geen `.sql` of `.py` losse files). Gebruik Python notebook met `%sql` magic.
-3. **Overschrijf bestaande notebooks volledig** — geen merge, geen behoud van handmatige edits.
-4. **Comments en markdown in het Nederlands**. Technische trefwoorden (`MERGE`, `APPLY CHANGES INTO`, `STREAMING TABLE`) blijven Engels.
-5. **Serverless-compatibel blijven**: geen RDD API, geen `dbutils.fs.mount`, geen Spark-config wijzigingen die serverless niet ondersteunt.
+1. **Comments en markdown in het Nederlands**. Technische trefwoorden (`MERGE`, `APPLY CHANGES INTO`, `STREAMING TABLE`) blijven Engels.
+2. **Serverless-compatibel blijven**: geen RDD API, geen `dbutils.fs.mount`, geen Spark-config wijzigingen die serverless niet ondersteunt. Naamgeving §1's eis "alles serverless DLT" is op twee plekken versoepeld; zie [ADR-0020](docs/adr/0020-pipeline-topology-one-workflow-over-per-layer-dlt-pipelines.md).
 
 ### 6.2 Schema-naamgeving
-- Staging schema: altijd `staging_<source_system>` waar `<source_system>` lowercase is van het YAML `source_system` veld.
+- Staging schema: altijd `staging_<source_system>` (lowercase).
 - Integration schema: altijd `integration`.
 - Datamart schema: altijd `datamart`.
 - Catalog: altijd via widget — nooit hardcoden.
 
 ### 6.3 Bij iedere `CREATE STREAMING TABLE`
 - Zet `delta.enableChangeDataFeed = 'true'` als de tabel downstream gelezen wordt door een andere streaming table.
-- Voeg per kolom met `nullable: false` in YAML een `CONSTRAINT valid_<col> EXPECT (<col> IS NOT NULL) ON VIOLATION DROP ROW` toe.
 - Zet altijd een `COMMENT` met korte beschrijving van de tabel.
+- Quality-checks op staging worden vermeden — zie [ADR-0011](docs/adr/0011-quality-failed-rows-route-to-paired-dwq-table.md) (en [ADR-0007](docs/adr/0007-quality-issues-are-routed-not-silently-dropped.md)).
 
 ### 6.4 Bij iedere `APPLY CHANGES INTO`
-- `KEYS` = business_keys uit YAML.
-- `SEQUENCE BY` = de `sequence_by` waarde uit YAML voor staging; `_commit_timestamp` voor integration (uit CDF van staging).
+- `KEYS` = business keys uit entity-spec.
+- `SEQUENCE BY` = de juiste timestamp (staging-load voor staging; `_commit_timestamp` voor integration uit staging CDF).
 - `STORED AS SCD TYPE 1` voor staging (huidige stand per BK).
-- `STORED AS SCD TYPE 2` voor integration (volledige historie).
-- `COLUMNS` expliciet opsommen — gebruik nooit `*`.
+- `STORED AS SCD TYPE 2` voor integration (volledige historie) — zie [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md).
+- `APPLY AS DELETE WHEN _change_type = 'delete'` om source-deletes te honoreren.
 
 ### 6.5 Bij iedere DWH-view
 - Voeg verplicht toe: `WA_FROMDATE`, `WA_UNTODATE`, `WA_ISCURR`, `WKP_<TABEL>`, `WKR_<TABEL>`.
 - Geef alle business- en `WA_*`-kolommen door uit DW_-tabel.
+- Geen self-side `WKR_HASH_` (zie [ADR-0014](docs/adr/0014-no-self-side-bk-hash-column-in-dwh-views.md)).
 
 ### 6.6 Bij iedere DIM-view
-- Lees `scd_type` uit YAML.
-- Type 2: alle versies + `MK_<TABEL>`, `MK_ROOT`, `MA_FROM`, `MA_UNTO`, `MA_ISCURR`.
-- Type 1: alleen `WA_ISCURR = 1` + `MK_<TABEL>`, `MA_CREATEDATE`, `MA_CHANGEDATE`, `MA_ISDEL`.
+- Type 2: zie [ADR-0013](docs/adr/0013-scd2-dim-views-expose-every-version.md) — elke versie, `MK_<NAAM>` ← `WK_`, `MK_ROOT` ← `WKR_`.
+- Type 1: zie [ADR-0012](docs/adr/0012-scd1-dim-views-source-from-latest-row.md) — latest-row-per-BK, `MK_<NAAM>` ← `WKR_`, `MA_CHANGEDATE` includeert deletes.
+- `DIM_DATE` is een gegenereerde calendar-view, geen entity-dimensie — zie [ADR-0018](docs/adr/0018-dim-date-is-a-generated-calendar-view-keyed-by-yyyymmdd.md).
 
 ### 6.7 Bij iedere FCT-tabel
-- Lees `dimensions` uit YAML. Per dimensie:
-  - Met `temporal_column` → join temporeel op `MA_FROM`/`MA_UNTO` van die dimensie (SCD2 verwacht).
-  - Zonder `temporal_column` → directe join op de business key (SCD1 of date-dim).
-- Lees `measures` uit YAML voor de meet-kolommen.
-- Lees `incremental.strategy` voor de laad-strategie.
-
-### 6.8 Wat Claude Code NOOIT mag doen
-- Notebooks met andere extensie dan `.ipynb` aanmaken.
-- Catalog-namen hardcoden.
-- Engelse comments toevoegen waar Nederlands moet.
-- Kolommen toevoegen die niet in YAML staan (behalve de verplichte `WA_*`/`SA_*`/`MA_*`).
-- `APPLY CHANGES INTO` skippen ten gunste van handgeschreven `MERGE` — dat breekt het deployment-model.
-- Niet-serverless features gebruiken (RDD, mounts, init scripts, GPU clusters).
-- DDL gebruiken die niet werkt in Lakeflow Declarative Pipelines.
+- Facts lezen uit `DWH_<TABEL>` (niet uit `DIM_`) en projecteren `WKR_<REF>` als `MK_<NAAM>` — zie [ADR-0020](docs/adr/0020-pipeline-topology-one-workflow-over-per-layer-dlt-pipelines.md).
+- Per dimensie: temporele join op `WA_FROMDATE`/`WA_UNTODATE` van de DWH-versie waarvan de fact-rij afhangt; directe join op `yyyymmdd::INT` voor `DIM_DATE`.
 
 ---
 
@@ -567,53 +490,40 @@ STORED AS SCD TYPE 1;
 .
 ├── README.md
 ├── databricks.yml                      # DAB config (multi-env)
-├── conventies/
-│   ├── naamgeving-en-lagen.md          # ← dit document
-│   └── yaml-genereren-howto.md         # ← how-to voor YAML genereren
-├── bronnen/                            # ← input: YAML per bron-tabel
-│   ├── ms_crm/
-│   │   ├── klant.yml
-│   │   └── order.yml
-│   └── azurestorage/
-│       └── product.yml
-├── datamart/                           # ← input: YAML per FCT_
-│   ├── fct_sales.yml
-│   └── fct_inventory.yml
-└── notebooks/                          # ← output: door Claude Code gegenereerd
+├── CONTEXT.md                          # human-readable entity-inventory (zie ADR-0009)
+├── docs/adr/                           # binding ontwerpbeslissingen (ADR-0001…ADR-0020)
+├── naamgeving-en-lagen.md              # ← dit document (cheat-sheet)
+├── integration/                        # DLT-SQL voor DW_/DWH_/DWQ_-entiteiten
+├── datamart/                           # DLT-SQL voor FCT_-tabellen
+├── views/datamart/                     # apply_views: plain UC DIM_-views
+├── resources/
+│   └── demo_workflow.yml               # Workflow over per-layer pipelines (ADR-0020)
+└── notebooks/                          # staging Auto Loader + ondersteunende tasks
     ├── staging/
-    │   ├── stg_klant.ipynb
-    │   └── stg_order.ipynb
-    ├── integration/
-    │   ├── dw_klant.ipynb              # bevat DW_KLANT én DWH_KLANT
-    │   └── dw_order.ipynb
-    └── datamart/
-        ├── dim_klant.ipynb
-        ├── dim_product.ipynb
-        └── fct_sales.ipynb
+    ├── integration/                    # (legacy/voorbeelden)
+    └── datamart/                       # (legacy/voorbeelden)
 ```
 
 ---
 
-## 8. Snelle referentie — beslissingsboom voor Claude Code
+## 8. Snelle referentie — beslissingsboom
 
 ```
-Nieuwe YAML in bronnen/<bron>/<tabel>.yml?
+Nieuwe entiteit (in DLT-SQL — ADR-0009):
 │
-├─▶ Genereer notebooks/staging/stg_<tabel>.ipynb
-│   - STG_<TABEL> streaming table, MERGE op BK, CDF aan
+├─▶ Staging: STG_<TABEL> via Auto Loader (of via LC voor SQL Server — ADR-0017)
 │
-├─▶ Genereer notebooks/integration/dw_<tabel>.ipynb
-│   - DW_<TABEL> streaming table, SCD2 via APPLY CHANGES, Identity WK_
-│   - DWH_<TABEL> view met WA_FROMDATE, WA_UNTODATE, WA_ISCURR, WKP_, WKR_
+├─▶ Integration: DW_<TABEL> via APPLY CHANGES INTO ... SCD TYPE 2 (ADR-0010)
+│   + DWQ_<TABEL> via tagged MV (ADR-0011)
+│   + DWH_<TABEL> view met WA_FROMDATE/WA_UNTODATE/WA_ISCURR/WKP_/WKR_
 │
-└─▶ datamart-blok aanwezig in YAML?
-    │
-    ├─▶ scd_type: 2 → notebooks/datamart/dim_<naam>.ipynb (Type 2 view)
-    └─▶ scd_type: 1 → notebooks/datamart/dim_<naam>.ipynb (Type 1 view)
+└─▶ Datamart vereist?
+    ├─▶ SCD2: DIM_<NAAM> view die elke versie toont (ADR-0013)
+    └─▶ SCD1: DIM_<NAAM> view = latest-row-per-BK uit DWH_ (ADR-0012)
 
-Nieuwe YAML in datamart/<fct_naam>.yml?
+Nieuwe FCT_<NAAM>:
 │
-└─▶ Genereer notebooks/datamart/<fct_naam>.ipynb
-    - FCT_<NAAM> streaming table volgens incremental strategy
-    - Joins per dimensie: temporeel (met temporal_column) of direct
+└─▶ Streaming table die DWH_<TABEL> leest en WKR_<REF> projecteert als MK_<NAAM>
+    Date-dimensie: directe join op yyyymmdd::INT (DIM_DATE — ADR-0018)
+    Entiteits-dimensies: temporeel op WA_FROMDATE/WA_UNTODATE
 ```
