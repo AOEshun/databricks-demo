@@ -6,7 +6,7 @@
 --                            so each drop-rule's violation count surfaces in the DLT
 --                            event log (ADR-0011).
 --   2. DW_ORDER_HEADER    — cleansed SCD2 streaming table populated via
---                            APPLY CHANGES INTO … STORED AS SCD TYPE 2 from the
+--                            FLOW AUTO CDC … STORED AS SCD TYPE 2 from the
 --                            tagged MV filtered to size(failed_rules)=0 (ADR-0010).
 --   3. DWH_ORDER_HEADER   — view exposing every DW version with renamed validity
 --                            columns (WA_FROMDATE/WA_UNTODATE/WA_ISCURR) and
@@ -91,7 +91,7 @@ SELECT
     CASE WHEN ORDER_TOTAL    <  0    THEN 'order_total_non_negative'  END,
     CASE WHEN ORDER_AMOUNT   <  0    THEN 'order_amount_non_negative' END
   )) AS failed_rules,
-  -- CDF metadata (pass-through for downstream APPLY CHANGES SEQUENCE BY + DWQ diagnostic)
+  -- CDF metadata (pass-through for downstream FLOW AUTO CDC SEQUENCE BY + DWQ diagnostic)
   _commit_timestamp,
   _change_type
 FROM STREAM table_changes('${pipeline.catalog}.STAGING_AZURESTORAGE.STG_ORDER_HEADER', 1)
@@ -126,9 +126,8 @@ CREATE OR REFRESH STREAMING TABLE DW_ORDER_HEADER (
   CONSTRAINT order_id_not_null EXPECT (order_id IS NOT NULL) ON VIOLATION FAIL UPDATE
 )
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
-COMMENT 'Cleansed ORDER_HEADER, SCD2 via APPLY CHANGES from order_header_src (where size(failed_rules)=0).';
-
-APPLY CHANGES INTO LIVE.DW_ORDER_HEADER
+COMMENT 'Cleansed ORDER_HEADER, SCD2 via AUTO CDC from order_header_src (where size(failed_rules)=0).'
+FLOW AUTO CDC
 FROM (
   SELECT * EXCEPT (failed_rules, _change_type)
   FROM STREAM(LIVE.order_header_src)
