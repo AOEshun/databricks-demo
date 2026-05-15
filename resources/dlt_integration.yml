@@ -1,7 +1,7 @@
 resources:
   pipelines:
     dlt_integration:
-      name: demo-silver-integration
+      name: demo-integration
 
       catalog: ${var.catalog}
       target: INTEGRATION
