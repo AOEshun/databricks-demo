@@ -19,7 +19,7 @@
 └──────────────────────┘    └──────────────────────┘    └──────────────────────┘
 ```
 
-- DW/DWH-mechaniek (`APPLY CHANGES INTO STORED AS SCD TYPE 2`, beheer van `__START_AT`/`__END_AT`, rename naar `WA_FROMDATE`/`WA_UNTODATE`): zie [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md).
+- DW/DWH-mechaniek (`FLOW AUTO CDC STORED AS SCD TYPE 2`, beheer van `__START_AT`/`__END_AT`, rename naar `WA_FROMDATE`/`WA_UNTODATE`): zie [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md).
 - Quality-routing naar `DWQ_<TABEL>`: zie [ADR-0011](docs/adr/0011-quality-failed-rows-route-to-paired-dwq-table.md).
 - Eén canonieke `DW_<TABEL>` per entiteit (niet per bron): zie [ADR-0016](docs/adr/0016-integration-entities-are-canonical-not-per-source.md).
 - Pipeline-topologie (Workflow over per-layer DLT pipelines, `DIM_*` als plain UC-views): zie [ADR-0020](docs/adr/0020-pipeline-topology-one-workflow-over-per-layer-dlt-pipelines.md).
@@ -87,9 +87,9 @@ Voor Lakeflow Connect-bronnen ontbreken deze kolommen — daar worden `_change_t
 
 ### 2.5 Verplichte administratie-kolommen — DW (Integration) — zie ADR-0010, ADR-0015
 
-`__START_AT` en `__END_AT` worden door `APPLY CHANGES INTO` beheerd; in de `DWH_<TABEL>` view worden ze hernoemd naar de Axians-conventies.
+`__START_AT` en `__END_AT` worden door `FLOW AUTO CDC` beheerd; in de `DWH_<TABEL>` view worden ze hernoemd naar de Axians-conventies.
 
-**Op DW_-tabel zelf** (gevoed door `APPLY CHANGES INTO`):
+**Op DW_-tabel zelf** (gevoed door `FLOW AUTO CDC`):
 
 | Kolom | Type | Betekenis |
 |---|---|---|
@@ -246,10 +246,9 @@ CREATE OR REFRESH STREAMING TABLE ${c.catalog}.staging_${c.source_system}.STG_KL
 TBLPROPERTIES (
   delta.enableChangeDataFeed = 'true'
 )
-COMMENT 'Staging klant — incrementele Auto Loader, rauw (geen kwaliteitsregels)';
-
+COMMENT 'Staging klant — incrementele Auto Loader, rauw (geen kwaliteitsregels)'
 -- Auto Loader leest parquet; SA_* admin-kolommen worden door de ingest-notebook toegevoegd
-APPLY CHANGES INTO ${c.catalog}.staging_${c.source_system}.STG_KLANT
+FLOW AUTO CDC
 FROM STREAM read_files('/Volumes/${c.catalog}/landing/${c.source_system}/klant/',
                        format => 'parquet')
 KEYS (klantcode)
@@ -283,10 +282,9 @@ CREATE OR REFRESH STREAMING TABLE ${c.catalog}.integration.DW_KLANT
   WA_HASH        STRING,
   CONSTRAINT valid_bk EXPECT (klantcode IS NOT NULL) ON VIOLATION FAIL UPDATE
 )
-COMMENT 'Historische laag klant — SCD2 via APPLY CHANGES INTO';
-
+COMMENT 'Historische laag klant — SCD2 via FLOW AUTO CDC'
 -- SCD2 op basis van Staging CDF; de tagged source MV (klant_src) levert de gefilterde input
-APPLY CHANGES INTO ${c.catalog}.integration.DW_KLANT
+FLOW AUTO CDC
 FROM (SELECT * FROM STREAM(klant_src) WHERE size(failed_rules) = 0)
 KEYS (klantcode)
 APPLY AS DELETE WHEN WA_CRUD = 'D'
@@ -389,9 +387,8 @@ CREATE OR REFRESH STREAMING TABLE ${c.catalog}.datamart.FCT_SALES
   AANTAL         INT,
   WA_CRUDDTS     TIMESTAMP
 )
-COMMENT 'Verkoopfeiten — grain: één rij per verkoopregel per boekdatum';
-
-APPLY CHANGES INTO ${c.catalog}.datamart.FCT_SALES
+COMMENT 'Verkoopfeiten — grain: één rij per verkoopregel per boekdatum'
+FLOW AUTO CDC
 FROM STREAM(
   SELECT
     -- date dimensie: directe join op datum-key (yyyymmdd::INT — ADR-0018)
@@ -434,7 +431,7 @@ STORED AS SCD TYPE 1;
 > **Note**: De codegen-georiënteerde regels (YAML → notebooks) hieronder zijn behouden voor historische context. [ADR-0009](docs/adr/0009-entity-structure-lives-in-the-sql.md) verbiedt een YAML-gedreven entity-registry; entity-structuur leeft in de DLT-SQL. Lees deze sectie daarom als naslag, niet als bindende workflow.
 
 ### 6.1 Algemeen
-1. **Comments en markdown in het Nederlands**. Technische trefwoorden (`MERGE`, `APPLY CHANGES INTO`, `STREAMING TABLE`) blijven Engels.
+1. **Comments en markdown in het Nederlands**. Technische trefwoorden (`MERGE`, `AUTO CDC INTO`, `FLOW AUTO CDC`, `STREAMING TABLE`) blijven Engels.
 2. **Serverless-compatibel blijven**: geen RDD API, geen `dbutils.fs.mount`, geen Spark-config wijzigingen die serverless niet ondersteunt. Naamgeving §1's eis "alles serverless DLT" is op twee plekken versoepeld; zie [ADR-0020](docs/adr/0020-pipeline-topology-one-workflow-over-per-layer-dlt-pipelines.md).
 
 ### 6.2 Schema-naamgeving
@@ -448,12 +445,12 @@ STORED AS SCD TYPE 1;
 - Zet altijd een `COMMENT` met korte beschrijving van de tabel.
 - Quality-checks op staging worden vermeden — zie [ADR-0011](docs/adr/0011-quality-failed-rows-route-to-paired-dwq-table.md) (en [ADR-0007](docs/adr/0007-quality-issues-are-routed-not-silently-dropped.md)).
 
-### 6.4 Bij iedere `APPLY CHANGES INTO`
+### 6.4 Bij iedere `FLOW AUTO CDC`
 - `KEYS` = business keys uit entity-spec.
 - `SEQUENCE BY` = de juiste timestamp (staging-load voor staging; `_commit_timestamp` voor integration uit staging CDF).
 - `STORED AS SCD TYPE 1` voor staging (huidige stand per BK).
 - `STORED AS SCD TYPE 2` voor integration (volledige historie) — zie [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md).
-- In integration: `APPLY AS DELETE WHEN WA_CRUD = 'D'` (na mapping in tagged source MV — `_change_type` is al vertaald naar `WA_CRUD` vóór `APPLY CHANGES INTO`).
+- In integration: `APPLY AS DELETE WHEN WA_CRUD = 'D'` (na mapping in tagged source MV — `_change_type` is al vertaald naar `WA_CRUD` vóór `FLOW AUTO CDC`).
 
 ### 6.5 Bij iedere DWH-view
 - Voeg verplicht toe: `WA_FROMDATE`, `WA_UNTODATE`, `WA_ISCURR`, `WKP_<TABEL>`, `WKR_<TABEL>`.
@@ -510,7 +507,7 @@ Nieuwe entiteit (in DLT-SQL — ADR-0009):
 │
 ├─▶ Staging: STG_<TABEL> via Auto Loader (of via LC voor SQL Server — ADR-0017)
 │
-├─▶ Integration: DW_<TABEL> via APPLY CHANGES INTO ... SCD TYPE 2 (ADR-0010)
+├─▶ Integration: DW_<TABEL> via FLOW AUTO CDC ... SCD TYPE 2 (ADR-0010)
 │   + DWQ_<TABEL> via tagged MV (ADR-0011)
 │   + DWH_<TABEL> view met WA_FROMDATE/WA_UNTODATE/WA_ISCURR/WKP_/WKR_
 │
