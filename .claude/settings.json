@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/validate_ipynb.py",
+            "timeout": 10,
+            "statusMessage": "Validating notebook JSON"
+          },
+          {
+            "type": "command",
+            "command": "python .claude/hooks/adr_reminder.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
