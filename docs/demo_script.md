@@ -1,4 +1,4 @@
-# Demo Script — Tasty Bytes Medallion Lakehouse
+# Demo Script — Tasty Bytes KRM Lakehouse
 
 **Audience:** Pre-sales engineers running live customer demos.  
 **Duration:** 60–90 minutes end-to-end; each segment can stand alone.  
@@ -29,13 +29,21 @@ databricks bundle deploy
     ├─→ ingest_azurestorage_full         (STAGING_AZURESTORAGE — mode=full)
     └─→ ingest_azurestorage_incremental  (STAGING_AZURESTORAGE — mode=incremental)
              ↓
-         dlt_integration  (Silver DLT — INTEGRATION schema)
-              ↓
-          dlt_datamart    (Gold DLT — DATAMART schema)
+         dlt_integration  (Integration DLT — INTEGRATION schema: DW_/DWQ_/DWH_)
+              ├──────────────┐
+              ↓              ↓
+          dlt_datamart    apply_views  (DIM_<NAAM> plain UC views over DWH_)
+          (FCT_ MVs in DATAMART)
 
   [Dashboard] tasty_bytes_sales   (auto-deployed via bundle)
   [Genie]     tasty_bytes_genie   (post-deploy manual setup — segment 10)
 ```
+
+The layer vocabulary used throughout this demo follows KRM:
+
+- **Staging** (Ingest layer, `STAGING_AZURESTORAGE`) — raw Auto Loader landings as `STG_<TABEL>` with `SA_*` admin columns.
+- **Integration** (Combine layer, `INTEGRATION`) — cleansed history (`DW_<TABEL>`), quarantine (`DWQ_<TABEL>`), and consumer projection views (`DWH_<TABEL>`).
+- **Datamart** (Publish layer, `DATAMART`) — fact MVs (`FCT_<NAAM>`) plus plain UC dimension views (`DIM_<NAAM>`).
 
 ---
 
@@ -57,28 +65,29 @@ databricks bundle deploy
 
 2. After deploy completes, navigate to **Workflows** in the Databricks sidebar.
 3. Find the workflow named **`demo-end-to-end-workflow`** and click **Run now**.
-4. Watch the DAG view. You will see four tasks light up in order:
+4. Watch the DAG view. You will see five tasks light up in order:
 
    ```
    setup  →  ingest_azurestorage_full   (parallel)
           →  ingest_azurestorage_incremental
                     ↓
               dlt_integration
-                    ↓
-               dlt_datamart
+                    ├──────────────┐
+                    ↓              ↓
+                dlt_datamart    apply_views
    ```
 
-5. Wait for all four tasks to show a green checkmark.
+5. Wait for all tasks to show a green checkmark.
 
 ### Expected observation
 
-- All four tasks succeed (green).
-- `setup` finishes first; the two ingest tasks run in parallel; `dlt_integration` starts after both ingest tasks complete; `dlt_datamart` starts after `dlt_integration` completes.
+- All tasks succeed (green).
+- `setup` finishes first; the two ingest tasks run in parallel; `dlt_integration` starts after both ingest tasks complete; `dlt_datamart` and `apply_views` start in parallel after `dlt_integration` completes.
 - The AI/BI Dashboard `tasty_bytes_sales` is visible in the workspace under **Dashboards**.
 
 ### Talking points
 
-> "One command deploys the entire pipeline — the Workflow, both DLT pipelines, and the dashboard — as versioned infrastructure. Nothing is configured by hand in the UI."
+> "One command deploys the entire pipeline — the Workflow, both DLT pipelines, the dim views notebook, and the dashboard — as versioned infrastructure. Nothing is configured by hand in the UI."
 
 ---
 
@@ -102,17 +111,17 @@ databricks bundle deploy
 
 3. Compare with the row count from the first run.
 
-4. Also check the Bronze table counts:
+4. Also check the staging table counts:
 
    ```sql
-   SELECT COUNT(*) AS order_header_rows FROM DEMO.STAGING_AZURESTORAGE.order_header;
-   SELECT COUNT(*) AS order_detail_rows  FROM DEMO.STAGING_AZURESTORAGE.order_detail;
+   SELECT COUNT(*) AS order_header_rows FROM DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER;
+   SELECT COUNT(*) AS order_detail_rows  FROM DEMO.STAGING_AZURESTORAGE.STG_ORDER_DETAIL;
    ```
 
 ### Expected observation
 
 - The control table still contains exactly 2 rows (`order_detail`, `order_header`) — no duplicates.
-- The Bronze table row counts are identical to the first run (full-load mode overwrites, not appends).
+- The staging table row counts are identical to the first run (full-load mode overwrites, not appends).
 - The `setup` notebook used a `MERGE` statement, so re-running it is a no-op for pre-existing seed rows.
 
 ### Talking points
@@ -121,7 +130,7 @@ databricks bundle deploy
 
 ---
 
-## Segment 3 — Metadata-driven full → incremental switch (Bronze)
+## Segment 3 — Metadata-driven full → incremental switch (staging)
 
 ### Setup
 
@@ -186,114 +195,125 @@ databricks bundle deploy
 
 ---
 
-## Segment 4 — Change Data Feed propagation (Bronze → Silver)
+## Segment 4 — Change Data Feed propagation (staging → integration)
 
 ### Setup
 
-- Segment 1 complete. Silver tables (`INTEGRATION.order_header`, `INTEGRATION.order_detail`) exist and contain data.
+- Segment 1 complete. Integration tables (`INTEGRATION.DW_ORDER_HEADER`, `INTEGRATION.DW_ORDER_DETAIL`) exist and contain data; consumer views (`DWH_ORDER_HEADER`, `DWH_ORDER_DETAIL`) project them.
 
 ### Steps
 
-**Step A — Confirm CDF is enabled on Bronze:**
+**Step A — Confirm CDF is enabled on staging:**
 
 1. Run in a SQL editor:
 
    ```sql
-   SHOW TBLPROPERTIES DEMO.STAGING_AZURESTORAGE.order_header;
+   SHOW TBLPROPERTIES DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER;
    ```
 
    Look for the row: `delta.enableChangeDataFeed = true`.
 
-**Step B — Make a small Bronze change:**
+**Step B — Make a small staging change:**
 
 2. Identify an existing order row:
 
    ```sql
    SELECT order_id, order_total
-   FROM   DEMO.STAGING_AZURESTORAGE.order_header
+   FROM   DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER
    LIMIT  5;
    ```
 
 3. Update one row (copy the `order_id` value from the result above):
 
    ```sql
-   UPDATE DEMO.STAGING_AZURESTORAGE.order_header
+   UPDATE DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER
    SET    order_total = order_total + 1.00
    WHERE  order_id = <paste_order_id_here>;
    ```
 
-**Step C — Run Silver:**
+**Step C — Run integration:**
 
 4. Trigger the `dlt_integration` pipeline task from the Workflow UI (or run the full workflow).
-5. After it completes, check Silver:
+5. After it completes, check the integration history table directly to see both versions:
+
+   ```sql
+   SELECT order_id, order_total, WA_FROMDATE, WA_UNTODATE, WA_ISCURR
+   FROM   DEMO.INTEGRATION.DW_ORDER_HEADER
+   WHERE  order_id = <same_order_id>
+   ORDER  BY WA_FROMDATE;
+   ```
+
+6. Then check the projection view (only the current row per BK):
 
    ```sql
    SELECT order_id, order_total
-   FROM   DEMO.INTEGRATION.order_header
+   FROM   DEMO.INTEGRATION.DWH_ORDER_HEADER
    WHERE  order_id = <same_order_id>;
    ```
 
 **Step D — Confirm propagation:**
 
-6. The updated `order_total` in Bronze has propagated to Silver.
+7. The updated `order_total` in staging has propagated to integration, with the previous version preserved in `DW_ORDER_HEADER` (closed off via `WA_UNTODATE`) and the new version current (`WA_ISCURR = 1`). The projection `DWH_ORDER_HEADER` shows only the new value.
 
-7. To see the CDF events directly:
+8. To see the CDF events directly on staging:
 
    ```sql
    SELECT _change_type, _commit_version, order_id, order_total
-   FROM   table_changes('DEMO.STAGING_AZURESTORAGE.order_header', 1)
+   FROM   table_changes('DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER', 1)
    ORDER  BY _commit_version DESC
    LIMIT  10;
    ```
 
 ### Expected observation
 
-- `SHOW TBLPROPERTIES` shows `delta.enableChangeDataFeed = true` on the Bronze table.
-- After the Silver pipeline runs, the updated `order_total` value is visible in `INTEGRATION.order_header`.
-- `table_changes()` shows a `update_preimage` event (old value) followed by an `update_postimage` event (new value).
+- `SHOW TBLPROPERTIES` shows `delta.enableChangeDataFeed = true` on the staging table.
+- `DW_ORDER_HEADER` now contains two rows for that `order_id`: the prior version with a populated `WA_UNTODATE` and `WA_ISCURR = 0`, plus the new current version with `WA_UNTODATE = '9999-12-31'` and `WA_ISCURR = 1`.
+- `DWH_ORDER_HEADER` (consumer view) shows exactly one row per `order_id` — the current version — with the new `order_total` value.
+- `table_changes()` shows a `update_preimage` event (old value) followed by an `update_postimage` event (new value) on the staging table.
 
 ### Talking points
 
-> "Change Data Feed is enabled on every Bronze table automatically. Silver reads the change stream via `apply_changes` — so a Bronze `UPDATE` or full-table overwrite both propagate cleanly to Silver without duplicating rows or breaking the pipeline."
+> "Change Data Feed is enabled on every staging table automatically. Integration reads the change stream via `APPLY CHANGES INTO ... STORED AS SCD TYPE 2` — every change becomes a new row in `DW_<TABEL>`, with `WA_FROMDATE`/`WA_UNTODATE` validity periods. The `DWH_` projection view exposes just the current version for consumers, while analysts can drop into `DW_` for full history."
 
 ---
 
-## Segment 5 — DLT Expectations + Quarantine (Silver)
+## Segment 5 — DLT Expectations + Quarantine (integration)
 
 ### Setup
 
-- Segment 1 complete. Silver DLT pipeline has run at least once.
+- Segment 1 complete. Integration DLT pipeline has run at least once.
 
 ### Steps
 
-**Step A — Open the Silver DLT graph:**
+**Step A — Open the integration DLT graph:**
 
 1. Navigate to **Workflows** → **Delta Live Tables** in the sidebar.
-2. Open the pipeline named **`demo-silver-integration`**.
-3. View the graph. You should see five nodes:
-   - `order_header` (Streaming Table, cleansed)
-   - `order_header_quarantine` (Streaming Table)
-   - `order_detail` (Streaming Table, cleansed)
-   - `order_detail_quarantine` (Streaming Table)
-   - `sales_line` (Materialised View, reading from both cleansed tables)
-4. Click the `order_header` node. The sidebar shows Expectations metrics: violations per rule.
+2. Open the pipeline named **`demo-integration`**.
+3. View the graph. For each entity you should see four nodes:
+   - `<entity>_tagged` (Materialised View — computes `failed_rules ARRAY<STRING>` per CDF event, carries `EXPECT (NOT array_contains(failed_rules, '<rule>'))` constraints)
+   - `DW_<TABEL>` (Streaming Table — cleansed history, populated via `APPLY CHANGES INTO ... STORED AS SCD TYPE 2` on `WHERE size(failed_rules) = 0`)
+   - `DWQ_<TABEL>` (Streaming Table — append-only quarantine, populated on `WHERE size(failed_rules) > 0`)
+   - `DWH_<TABEL>` (Materialised View — projection over `DW_<TABEL>`, renames `__START_AT`/`__END_AT` to `WA_FROMDATE`/`WA_UNTODATE`, derives `WA_ISCURR`, computes `WKP_<TABEL>`/`WKR_<TABEL>` surrogates)
+
+   Plus the integration view `SALES_LINE` (Materialised View, joining `DWH_ORDER_HEADER` and `DWH_ORDER_DETAIL`).
+4. Click the `order_header_tagged` node. The sidebar shows Expectations metrics: violations per rule, sourced from the `EXPECT (NOT array_contains(failed_rules, '<rule>'))` declarations.
 
 **Step B — Inject a malformed row (drop-rule violation):**
 
-5. Insert a Bronze row that violates the `order_total_non_negative` drop rule:
+5. Insert a staging row that violates the `order_total_non_negative` drop rule:
 
    ```sql
-   INSERT INTO DEMO.STAGING_AZURESTORAGE.order_header
+   INSERT INTO DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER
    (order_id, truck_id, location_id, customer_id, discount_id, shift_id,
     shift_start_time, shift_end_time, order_channel, order_ts, served_ts,
     order_currency, order_amount, order_tax_amount, order_discount_amount,
     order_total,
-    _ingestion_timestamp, _source_system, _source_file, _last_modified, _pipeline_run_id)
+    SA_CRUDDTS, SA_SRC, SA_RUNID)
    VALUES
    (9999999, 1, 1, 1, NULL, 1,
     28800000, 57600000, 'Online', current_timestamp(), current_timestamp()::string,
     'USD', 100.00, '5.00', '0.00', -1.00,
-    current_timestamp(), 'azurestorage', 'manual_inject.parquet', current_timestamp(), 'demo-manual');
+    current_timestamp(), 'azurestorage', 'demo-manual');
    ```
 
 6. Trigger the `dlt_integration` pipeline task.
@@ -304,273 +324,283 @@ databricks bundle deploy
 
    ```sql
    SELECT order_id, order_total, failed_rules
-   FROM   DEMO.INTEGRATION.order_header_quarantine
+   FROM   DEMO.INTEGRATION.DWQ_ORDER_HEADER
    ORDER BY order_id DESC
    LIMIT  10;
    ```
 
-8. Confirm the injected row (order_id 9999999) is present with `order_total = -1.00`.
+8. Confirm the injected row (order_id 9999999) is present with `order_total = -1.00` and `failed_rules` containing `'order_total_non_negative'`.
 
 9. Query by specific rule:
 
    ```sql
    SELECT order_id, order_total, failed_rules
-   FROM   DEMO.INTEGRATION.order_header_quarantine
+   FROM   DEMO.INTEGRATION.DWQ_ORDER_HEADER
    WHERE  array_contains(failed_rules, 'order_total_non_negative');
    ```
 
-10. Confirm the injected row is **absent** from the cleansed table:
+10. Confirm the injected row is **absent** from the cleansed history (and therefore from the projection):
 
     ```sql
-    SELECT COUNT(*) FROM DEMO.INTEGRATION.order_header WHERE order_id = 9999999;
+    SELECT COUNT(*) FROM DEMO.INTEGRATION.DW_ORDER_HEADER  WHERE order_id = 9999999;
+    SELECT COUNT(*) FROM DEMO.INTEGRATION.DWH_ORDER_HEADER WHERE order_id = 9999999;
     ```
 
-    Expected: 0 rows.
+    Expected: 0 rows in each.
 
 **Step D — Demonstrate a fail-rule:**
 
 11. Insert a row with `order_id = NULL`:
 
     ```sql
-    INSERT INTO DEMO.STAGING_AZURESTORAGE.order_header
+    INSERT INTO DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER
     (order_id, order_total, order_ts, customer_id, order_currency,
-     _ingestion_timestamp, _source_system, _source_file, _last_modified, _pipeline_run_id)
+     SA_CRUDDTS, SA_SRC, SA_RUNID)
     VALUES
     (NULL, 50.00, current_timestamp(), 1, 'USD',
-     current_timestamp(), 'azurestorage', 'fail_inject.parquet', current_timestamp(), 'demo-fail');
+     current_timestamp(), 'azurestorage', 'demo-fail');
     ```
 
 12. Trigger the `dlt_integration` pipeline task.
-13. Observe that the pipeline **halts** with a fail-expectation error. Click on the `order_header_bronze_cdf` node to see the violation.
+13. Observe that the pipeline **halts** with a fail-expectation error. Click on the `order_header_tagged` node to see the violation.
 
-    > **Cleanup:** Delete the NULL row from Bronze and re-run the pipeline to restore normal operation:
+    > **Cleanup:** Delete the NULL row from staging and re-run the pipeline to restore normal operation:
     >
     > ```sql
-    > DELETE FROM DEMO.STAGING_AZURESTORAGE.order_header WHERE order_id IS NULL;
+    > DELETE FROM DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER WHERE order_id IS NULL;
     > ```
 
 ### Expected observation
 
-- The DLT graph shows five nodes with green/orange badges.
-- The negative `order_total` row lands in `order_header_quarantine` with `failed_rules = ['order_total_non_negative']`.
-- The same row is absent from `INTEGRATION.order_header`.
+- The DLT graph shows the four-node-per-entity layout with green/orange badges.
+- The negative `order_total` row lands in `DWQ_ORDER_HEADER` with `failed_rules = ['order_total_non_negative']`.
+- The same row is absent from `DW_ORDER_HEADER` and `DWH_ORDER_HEADER`.
 - The `array_contains` query returns exactly the injected row.
 - The `NULL order_id` injection halts the entire pipeline (fail-level expectation).
 
 ### Talking points
 
-> "Bad rows don't disappear — they land in a paired quarantine table with a `failed_rules` array that tells analysts exactly which rules failed. The cleansed table is always trust-worthy; the quarantine table is always inspectable."
+> "Bad rows don't disappear — they land in a paired `DWQ_<TABEL>` quarantine table with a `failed_rules ARRAY<STRING>` column that tells analysts exactly which rules failed. The rule logic appears exactly once, in the upstream tagged MV's `CASE WHEN` expressions; the cleansed `DW_<TABEL>` is always trust-worthy and the quarantine table is always inspectable via `array_contains(failed_rules, '<rule>')`."
 
 ---
 
-## Segment 6 — Integrated business view (`sales_line`)
+## Segment 6 — Integrated business view (`SALES_LINE`)
 
 ### Setup
 
-- Segment 1 complete. Both `INTEGRATION.order_header` and `INTEGRATION.order_detail` contain data.
+- Segment 1 complete. Both `INTEGRATION.DWH_ORDER_HEADER` and `INTEGRATION.DWH_ORDER_DETAIL` contain data.
 
 ### Steps
 
-**Step A — Inspect the Materialised View:**
+**Step A — Inspect the integrated view:**
 
 1. Run in a SQL editor:
 
    ```sql
    SELECT *
-   FROM   DEMO.INTEGRATION.sales_line
+   FROM   DEMO.INTEGRATION.SALES_LINE
    LIMIT  10;
    ```
 
-2. Observe that each row contains columns from both `order_header` (truck_id, order_total, order_ts, …) and `order_detail` (menu_item_id, quantity, unit_price, price, …) joined on `order_id`.
+2. Observe that each row contains columns from both `DWH_ORDER_HEADER` (truck_id, order_total, order_ts, …) and `DWH_ORDER_DETAIL` (menu_item_id, quantity, unit_price, price, …) joined on `order_id`.
 
-3. Check the row count versus the Bronze detail table:
+3. Check the row count versus the staging detail table:
 
    ```sql
-   SELECT COUNT(*) AS sales_line_rows  FROM DEMO.INTEGRATION.sales_line;
-   SELECT COUNT(*) AS order_detail_rows FROM DEMO.STAGING_AZURESTORAGE.order_detail;
+   SELECT COUNT(*) AS sales_line_rows  FROM DEMO.INTEGRATION.SALES_LINE;
+   SELECT COUNT(*) AS order_detail_rows FROM DEMO.STAGING_AZURESTORAGE.STG_ORDER_DETAIL;
    ```
 
-   The counts should be close (or equal for a clean dataset — quarantined detail rows will be absent from `sales_line`).
+   The counts should be close (or equal for a clean dataset — quarantined detail rows will be absent from `SALES_LINE`).
 
-**Step B — Demonstrate MV propagation:**
+**Step B — Demonstrate propagation through the SCD2 chain:**
 
-4. Correct an `order_total` in the cleansed header table (or in Bronze and re-run Silver):
+4. Correct an `order_total` in staging (the canonical source — integration recomputes from CDF):
 
    ```sql
    -- Find a row to update
-   SELECT order_id, order_total FROM DEMO.INTEGRATION.order_header LIMIT 5;
+   SELECT order_id, order_total FROM DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER LIMIT 5;
 
    -- Make the correction (copy an order_id from above)
-   UPDATE DEMO.INTEGRATION.order_header
+   UPDATE DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER
    SET    order_total = order_total + 10.00
    WHERE  order_id = <paste_order_id_here>;
    ```
 
 5. Re-trigger the `dlt_integration` pipeline (or the full workflow).
 
-6. After the run, verify the `sales_line` MV reflects the correction:
+6. After the run, verify the `SALES_LINE` view reflects the correction:
 
    ```sql
    SELECT sl.order_id, sl.order_total, sl.menu_item_id, sl.quantity
-   FROM   DEMO.INTEGRATION.sales_line sl
+   FROM   DEMO.INTEGRATION.SALES_LINE sl
    WHERE  sl.order_id = <same_order_id>;
    ```
 
 ### Expected observation
 
-- `sales_line` rows contain a full denormalised view of each order line with all header attributes.
-- After a header correction, every `sales_line` row for that `order_id` reflects the updated `order_total` — the MV is fully recomputed on each pipeline run.
-- Quarantined rows are absent: a row in `order_detail_quarantine` does not appear in `sales_line`.
+- `SALES_LINE` rows contain a full denormalised view of each order line with all header attributes from the latest current version.
+- After a header correction, every `SALES_LINE` row for that `order_id` reflects the updated `order_total` — the projection chain `DW_ → DWH_ → SALES_LINE` recomputes on each pipeline run.
+- Quarantined rows are absent: a row in `DWQ_ORDER_DETAIL` does not appear in `SALES_LINE`.
 
 ### Talking points
 
-> "The `sales_line` Materialised View is the integrated enterprise view — one row per order line, all header attributes denormalised. Every pipeline run recomputes it, so a correction in Silver propagates automatically to all downstream consumers."
+> "`SALES_LINE` is the integrated enterprise view — one row per order line, all header attributes denormalised over the current `DWH_` projections. Every pipeline run refreshes it, so a correction in staging propagates through `DW_` (versioned history) into `DWH_` (current projection) and on to `SALES_LINE` automatically."
 
 ---
 
-## Segment 7 — Gold KPI aggregates
+## Segment 7 — Datamart fact MVs (`FCT_ORDER`)
 
 ### Setup
 
-- Segment 1 complete. Gold DLT pipeline has run at least once. `DATAMART` schema contains data.
+- Segment 1 complete. datamart DLT pipeline has run at least once. `DATAMART` schema contains data.
 
 ### Steps
 
-**Step A — Query the truck KPI aggregate:**
+**Step A — Query the order-grain fact:**
 
 1. Run:
 
    ```sql
-   SELECT order_date, truck_id, total_orders, total_revenue, avg_order_value
-   FROM   DEMO.DATAMART.daily_sales_by_truck
-   ORDER  BY order_date DESC, total_revenue DESC
+   SELECT MK_DATE, MK_TRUCK, MK_LOCATION, MK_CURRENCY, MK_ORDER_CHANNEL,
+          order_id, order_total
+   FROM   DEMO.DATAMART.FCT_ORDER
+   ORDER  BY MK_DATE DESC, order_total DESC
    LIMIT  20;
    ```
 
-2. Point out any row where `truck_id IS NULL` — this is the intentional "Unknown" bucket for orders where Bronze had no truck assignment.
+2. Observe that the FK columns (`MK_DATE`, `MK_TRUCK`, `MK_LOCATION`, …) are integer surrogates — `MK_DATE` is `yyyymmdd` (per ADR-0018), the others are IDENTITY-generated BIGINTs derived from `WKR_<TABEL>` (the root surrogate per BK lineage, per ADR-0012). No SHA2 hashes appear on the fact side.
 
-**Step B — Query the location KPI aggregate:**
+**Step B — Aggregate by truck:**
 
 3. Run:
 
    ```sql
-   SELECT order_date, location_id, total_orders, total_revenue, avg_order_value
-   FROM   DEMO.DATAMART.daily_sales_by_location
+   SELECT MK_TRUCK,
+          COUNT(*)         AS total_orders,
+          SUM(order_total) AS total_revenue,
+          AVG(order_total) AS avg_order_value
+   FROM   DEMO.DATAMART.FCT_ORDER
+   GROUP  BY MK_TRUCK
    ORDER  BY total_revenue DESC
    LIMIT  20;
    ```
 
-**Step C — Query the monthly currency trend:**
+4. Point out any row where `MK_TRUCK` is the "Unknown" sentinel — this is the intentional bucket for orders where staging had no truck assignment (per ADR-0007, surfaced rather than silently dropped).
 
-4. Run:
+**Step C — Join to `DIM_TRUCK` for human-readable labels:**
 
-   ```sql
-   SELECT year_month, order_currency, total_orders, total_revenue, avg_order_value
-   FROM   DEMO.DATAMART.monthly_revenue_by_currency
-   ORDER  BY year_month DESC, total_revenue DESC;
-   ```
-
-5. Demonstrate a date filter (no string parsing needed — `year_month` is a `DATE`):
+5. Run:
 
    ```sql
-   SELECT year_month, order_currency, total_revenue
-   FROM   DEMO.DATAMART.monthly_revenue_by_currency
-   WHERE  year_month >= '2024-01-01'
-   ORDER  BY year_month, order_currency;
+   SELECT t.truck_id, t.truck_brand_name,
+          COUNT(*)           AS total_orders,
+          SUM(f.order_total) AS total_revenue
+   FROM   DEMO.DATAMART.FCT_ORDER f
+   JOIN   DEMO.DATAMART.DIM_TRUCK t ON f.MK_TRUCK = t.MK_TRUCK
+   GROUP  BY t.truck_id, t.truck_brand_name
+   ORDER  BY total_revenue DESC
+   LIMIT  10;
    ```
 
-**Step D — Highlight the "Unknown" bucket:**
+**Step D — Monthly trend via `DIM_DATE`:**
 
-6. Run:
+6. `DIM_DATE` is a generated calendar view (per ADR-0018) keyed by `MK_DATE = yyyymmdd`. Run:
 
    ```sql
-   SELECT truck_id, SUM(total_revenue) AS unknown_revenue
-   FROM   DEMO.DATAMART.daily_sales_by_truck
-   WHERE  truck_id IS NULL
-   GROUP  BY truck_id;
+   SELECT d.year_month_start, f.MK_CURRENCY,
+          COUNT(*)           AS total_orders,
+          SUM(f.order_total) AS total_revenue,
+          AVG(f.order_total) AS avg_order_value
+   FROM   DEMO.DATAMART.FCT_ORDER f
+   JOIN   DEMO.DATAMART.DIM_DATE  d ON f.MK_DATE = d.MK_DATE
+   GROUP  BY d.year_month_start, f.MK_CURRENCY
+   ORDER  BY d.year_month_start DESC, total_revenue DESC;
    ```
-
-   If any rows are returned, these represent orders with no truck attribution — surfaced explicitly rather than silently dropped.
 
 ### Expected observation
 
-- `daily_sales_by_truck` and `daily_sales_by_location` each have one row per (date, dimension key) combination.
-- `monthly_revenue_by_currency` returns months as `DATE` values (e.g. `2024-03-01`) — BI tools render them on a time axis automatically.
-- If a NULL-truck row exists, it appears as a single row in the aggregate rather than being silently discarded.
+- `FCT_ORDER` exposes IDENTITY-generated `MK_<NAAM>` surrogates as FK columns (BIGINT) plus `MK_DATE` as a `yyyymmdd` INT.
+- Joining `MK_TRUCK` to `DIM_TRUCK.MK_TRUCK` resolves to the latest version's business attributes (SCD1 dim per ADR-0012).
+- Joining `MK_DATE` to `DIM_DATE.MK_DATE` resolves to a generated calendar row — covering exactly the date range observed in the fact.
+- If an "Unknown" surrogate row exists (BK was NULL upstream), it appears as a single row in the aggregate rather than being silently discarded.
 
 ### Talking points
 
-> "Silver passes `truck_id IS NULL` rows as warnings — they land in the cleansed Silver table and propagate to Gold as a visible 'Unknown' bucket. Data attribution issues surface in the aggregate rather than being silently swallowed."
+> "The fact reads from `DWH_<TABEL>` directly and projects `WKR_<TABEL>` as the `MK_<TABEL>` FK — the root surrogate, stable across all future updates and deletes of an entity. No SHA2 hash on the fact side; the consumer joins integer-to-integer between fact and dim. The 'Unknown' bucket surfaces attribution issues from staging in the aggregate rather than swallowing them silently."
 
 ---
 
-## Segment 8 — Gold wide table + Liquid Clustering
+## Segment 8 — Line-grain fact + Liquid Clustering (`FCT_SALES_LINE`)
 
 ### Setup
 
-- Segment 1 complete. `DATAMART.sales_lines_wide` exists and contains data.
+- Segment 1 complete. `DATAMART.FCT_SALES_LINE` exists and contains data.
 
 ### Steps
 
-**Step A — Inspect the wide table:**
+**Step A — Inspect the line-grain fact:**
 
 1. Run:
 
    ```sql
-   SELECT order_detail_id, order_id, truck_id, location_id, order_date, order_hour,
-          order_day_of_week, order_currency, quantity, unit_price, line_subtotal,
-          shift_duration_minutes
-   FROM   DEMO.DATAMART.sales_lines_wide
+   SELECT order_detail_id, order_id, line_number,
+          MK_TRUCK, MK_LOCATION, MK_DATE, MK_CURRENCY,
+          order_ts,
+          quantity, unit_price, price, line_subtotal
+   FROM   DEMO.DATAMART.FCT_SALES_LINE
    LIMIT  10;
    ```
 
-2. Point out the derived columns: `order_date`, `order_hour` (0–23), `order_day_of_week` (e.g. "Monday"), `line_subtotal` (quantity × unit_price), `shift_duration_minutes`.
+2. Point out the columns: degenerate dims (`order_id`, `order_detail_id`, `line_number`), event timestamps (`order_ts`, `served_ts`) denormalised from the header, IDENTITY-generated `MK_<NAAM>` FK surrogates, measures (`quantity`, `unit_price`, `price`), and the derived `line_subtotal = CAST(quantity * unit_price AS DECIMAL(38,4))`.
 
 **Step B — Confirm Liquid Clustering:**
 
 3. Run:
 
    ```sql
-   SHOW TBLPROPERTIES DEMO.DATAMART.sales_lines_wide;
+   SHOW TBLPROPERTIES DEMO.DATAMART.FCT_SALES_LINE;
    ```
 
-4. Find the row: `clusteringColumns = [["truck_id"],["location_id"],["order_date"],["order_currency"]]`.
+4. Find the row: `clusteringColumns = [["mk_truck"],["mk_location"],["mk_date"],["mk_currency"]]` (the table declaration is `CLUSTER BY (MK_TRUCK, MK_LOCATION, MK_DATE, MK_CURRENCY)`).
 
 5. Demonstrate a clustered query:
 
    ```sql
-   SELECT order_date, truck_id, order_currency,
+   SELECT MK_DATE, MK_TRUCK, MK_CURRENCY,
           COUNT(*) AS line_count, SUM(line_subtotal) AS subtotal
-   FROM   DEMO.DATAMART.sales_lines_wide
-   WHERE  truck_id = 1
-   AND    order_date >= '2024-01-01'
-   GROUP  BY order_date, truck_id, order_currency
-   ORDER  BY order_date;
+   FROM   DEMO.DATAMART.FCT_SALES_LINE
+   WHERE  MK_TRUCK = (SELECT MK_TRUCK FROM DEMO.DATAMART.DIM_TRUCK WHERE truck_id = 1)
+   AND    MK_DATE >= 20240101
+   GROUP  BY MK_DATE, MK_TRUCK, MK_CURRENCY
+   ORDER  BY MK_DATE;
    ```
 
-**Step C — Demonstrate time-of-day analysis (Genie-ready):**
+**Step C — Demonstrate time-of-day analysis (Genie-ready) via `DIM_DATE`:**
 
 6. Run:
 
    ```sql
-   SELECT order_hour, order_day_of_week,
-          COUNT(*) AS line_count,
-          ROUND(AVG(line_subtotal), 2) AS avg_line_value
-   FROM   DEMO.DATAMART.sales_lines_wide
-   GROUP  BY order_hour, order_day_of_week
-   ORDER  BY order_day_of_week, order_hour;
+   SELECT HOUR(f.order_ts)      AS order_hour,
+          d.day_name             AS order_day_of_week,
+          COUNT(*)               AS line_count,
+          ROUND(AVG(f.line_subtotal), 2) AS avg_line_value
+   FROM   DEMO.DATAMART.FCT_SALES_LINE f
+   JOIN   DEMO.DATAMART.DIM_DATE       d ON f.MK_DATE = d.MK_DATE
+   GROUP  BY HOUR(f.order_ts), d.day_name, d.day_of_week
+   ORDER  BY d.day_of_week, order_hour;
    ```
 
 ### Expected observation
 
-- `SHOW TBLPROPERTIES` shows `clusteringColumns` with the four declared keys.
-- The derived time columns (`order_hour`, `order_day_of_week`) are populated correctly from `order_ts`.
+- `SHOW TBLPROPERTIES` shows `clusteringColumns` with the four declared keys: `MK_TRUCK`, `MK_LOCATION`, `MK_DATE`, `MK_CURRENCY`.
+- The fact carries `order_ts`/`served_ts` denormalised from the header so time-of-day analyses (HOUR/DAYOFWEEK) work directly on the fact.
 - `line_subtotal = quantity * unit_price` — customers can spot `price` vs `line_subtotal` discrepancies.
 - The clustered query runs faster on repeat execution as Databricks applies the clustering automatically.
 
 ### Talking points
 
-> "Liquid Clustering means no more partition strategy debates. We declare four cluster keys; Databricks automatically reorganises the data as query patterns evolve. No ALTER TABLE, no data migration."
+> "`FCT_SALES_LINE` is the line-grain wide fact — heaviest table in the model, materialised to absorb the join and to benefit from Liquid Clustering. We declare four cluster keys (`MK_TRUCK`, `MK_LOCATION`, `MK_DATE`, `MK_CURRENCY`); Databricks automatically reorganises the data as query patterns evolve. No ALTER TABLE, no partition strategy debates, no data migration."
 
 ---
 
@@ -588,12 +618,12 @@ databricks bundle deploy
 
    | Widget | Source table | What it shows |
    |---|---|---|
-   | Revenue trend (line chart) | `DATAMART.monthly_revenue_by_currency` | Monthly revenue over time, one line per currency |
-   | Top trucks by revenue (bar chart) | `DATAMART.daily_sales_by_truck` | Top 10 trucks ranked by total revenue |
-   | Top locations by revenue (bar chart) | `DATAMART.daily_sales_by_location` | Top 10 locations ranked by total revenue |
-   | KPI card | `DATAMART.daily_sales_by_truck` | Total revenue + total orders across all time |
+   | Revenue trend (line chart) | `DATAMART.FCT_ORDER` + `DIM_DATE` + `DIM_CURRENCY` | Monthly revenue over time, one line per currency |
+   | Top trucks by revenue (bar chart) | `DATAMART.FCT_ORDER` + `DIM_TRUCK` | Top 10 trucks ranked by total revenue |
+   | Top locations by revenue (bar chart) | `DATAMART.FCT_ORDER` + `DIM_LOCATION` | Top 10 locations ranked by total revenue |
+   | KPI card | `DATAMART.FCT_ORDER` | Total revenue + total orders across all time |
 
-4. Click the **Refresh** button to pull the latest data from the Gold tables.
+4. Click the **Refresh** button to pull the latest data from the datamart tables.
 
 5. Demonstrate the date filter (if present in the dashboard): adjust the date range and observe that all widgets update simultaneously.
 
@@ -602,12 +632,12 @@ databricks bundle deploy
 ### Expected observation
 
 - All four widgets render with data.
-- Refreshing the dashboard queries the Gold tables directly — no intermediate cache or import step.
+- Refreshing the dashboard queries the datamart tables directly — no intermediate cache or import step.
 - The dashboard was deployed automatically by `databricks bundle deploy` — no manual creation in the UI was needed.
 
 ### Talking points
 
-> "The dashboard is code — it lives in the Git repo, deploys with the bundle, and is always in sync with the pipeline schema. No manual dashboard rebuild after a schema change."
+> "The dashboard is code — it lives in the Git repo, deploys with the bundle, and is always in sync with the pipeline schema. Widgets join `FCT_<NAAM>` to `DIM_<NAAM>` views — the dim views are plain UC views over `DWH_`, so every dashboard refresh sees current dim attributes without an extra materialisation step."
 
 ---
 
@@ -615,25 +645,25 @@ databricks bundle deploy
 
 ### 10a — First-time setup (run once after bundle deploy)
 
-**Prerequisites:** `dlt_datamart` pipeline has run at least once and `DATAMART.sales_lines_wide` contains data.
+**Prerequisites:** `dlt_datamart` pipeline has run at least once and `DATAMART.FCT_SALES_LINE` contains data. Per the PRD, Genie configuration is a manual post-deploy step.
 
 1. Navigate to **AI/BI** → **Genie** in the Databricks workspace sidebar.
 2. Click **New Genie space** (or the **+** button).
 3. Enter the name: **`tasty_bytes_genie`**.
-4. Under **Tables**, click **Add table** and select:
-   - Catalog: `DEMO`
-   - Schema: `DATAMART`
-   - Table: `sales_lines_wide`
+4. Under **Tables**, click **Add table** and add the following from catalog `DEMO`, schema `DATAMART`:
+   - `FCT_SALES_LINE` (the primary fact)
+   - `DIM_TRUCK`, `DIM_LOCATION`, `DIM_DATE`, `DIM_CURRENCY`, `DIM_MENU_ITEM` (so Genie can resolve `MK_*` surrogates to human-readable labels)
 5. Click **Save**.
 6. Under **Example questions**, add the following four questions (copy-paste each):
    - `Welke truck had vorige week de meeste revenue?`
    - `Vergelijk revenue per uur van de dag tussen truck 1 en truck 2`
    - `Wat is de gemiddelde order value per locatie deze maand?`
    - `Welke menu_item_id wordt het meest verkocht op zondag?`
-7. (Optional) Configure column-level metadata:
-   - Click on the `sales_lines_wide` table in the Genie space editor.
-   - Find column `order_hour` and add the description: `The hour of the day the order was placed (0-23).`
-   - Find column `order_day_of_week` and add: `The day of the week the order was placed (e.g. Monday, Tuesday).`
+7. (Optional) Configure column-level metadata so Genie understands the surrogate-to-attribute joins:
+   - Click on `FCT_SALES_LINE` in the Genie space editor.
+   - Find column `MK_TRUCK` and add the description: `IDENTITY-generated surrogate FK to DIM_TRUCK. Join on DIM_TRUCK.MK_TRUCK to resolve truck_brand_name, truck_type, etc.`
+   - Find column `MK_DATE` and add: `Date surrogate in yyyymmdd integer form (e.g. 20240315). Join on DIM_DATE.MK_DATE for calendar attributes.`
+   - Find column `order_ts` and add: `Original event timestamp. Use HOUR(order_ts) for time-of-day analysis.`
    - Click **Save**.
 8. The Genie space is now ready. Proceed to 10b for the live demo.
 
@@ -649,24 +679,24 @@ databricks bundle deploy
    ```
 
 3. Watch Genie generate a SQL query, execute it, and display the result as a table or chart.
-4. Click **Show SQL** to reveal the generated query. Observe that it filters on `order_date` in the correct date range for "vorige week" and aggregates `order_total` (or `line_subtotal`) per `truck_id`.
+4. Click **Show SQL** to reveal the generated query. Observe that it filters on a date range for "vorige week" (typically via `DIM_DATE.full_date` or `MK_DATE`), aggregates `order_total` (or `line_subtotal`) per `MK_TRUCK`, and joins `DIM_TRUCK` to display `truck_brand_name`.
 5. Ask a follow-up question:
 
    ```
    Vergelijk revenue per uur van de dag tussen truck 1 en truck 2
    ```
 
-6. Observe that Genie uses the `order_hour` column and generates a side-by-side comparison. This works because `sales_lines_wide` already contains the derived `order_hour` column.
+6. Observe that Genie uses `HOUR(order_ts)` on `FCT_SALES_LINE` and joins `DIM_TRUCK` to filter by `truck_id`. This works because `order_ts` is denormalised onto the line-grain fact.
 
 ### Expected observation
 
 - Genie answers the question in natural language and shows a SQL query.
-- The generated SQL references `DEMO.DATAMART.sales_lines_wide` (the only table in the space).
-- The `order_hour` and `order_day_of_week` derived columns make time-of-day and day-of-week questions answerable without any additional join or calculation.
+- The generated SQL references `DEMO.DATAMART.FCT_SALES_LINE` plus the registered `DIM_<NAAM>` views.
+- Joining `MK_<NAAM>` surrogates to dim views lets Genie answer in business terms (truck brand name, location city, day name) rather than raw IDs.
 
 ### Talking points
 
-> "Genie answers business questions in natural language using the data we built in the Gold layer. The derived columns — hour of day, day of week — make these questions answerable without the analyst needing to know the underlying schema."
+> "Genie answers business questions in natural language. We expose the line-grain fact `FCT_SALES_LINE` together with the `DIM_<NAAM>` views — so questions get answered in business attributes (brand, day name, currency code) even though the fact carries integer surrogates. The denormalised `order_ts` on the fact makes time-of-day questions answerable without any extra calculation."
 
 ---
 
@@ -725,7 +755,7 @@ Shows every version: version number, timestamp, operation type (`MERGE`, `UPDATE
 
 ### Talking points
 
-> "Delta Lake's transaction log is a built-in time machine. No back-up or restore procedure required — every version of the control table is queryable with a single SQL clause. This is how compliance teams reconstruct data state for a specific reporting date."
+> "Delta Lake's transaction log is a built-in time machine. No back-up or restore procedure required — every version of the control table is queryable with a single SQL clause. This is how compliance teams reconstruct data state for a specific reporting date — complementing the explicit SCD2 history we already keep in `DW_<TABEL>` for the data itself."
 
 ---
 
@@ -781,7 +811,7 @@ Aggregated view: which user performed which action how many times. Useful for co
 
 ### Talking points
 
-> "The Unity Catalog audit log records every data access and modification — automatically, without any instrumentation. Combined with Delta Time Travel, we have both the 'who' (audit log) and the 'what' (Delta version history) for every change to every table."
+> "The Unity Catalog audit log records every data access and modification — automatically, without any instrumentation. Combined with Delta Time Travel and the SCD2 history in `DW_<TABEL>`, we have the 'who' (audit log), the 'when' (`WA_FROMDATE`/`WA_UNTODATE`), and the 'what' (Delta version history) for every change to every table."
 
 ---
 
@@ -802,11 +832,11 @@ Aggregated view: which user performed which action how many times. Useful for co
 
 Confirms `system.lineage.table_lineage` is accessible.
 
-**Section 2 — Bronze lineage:**
+**Section 2 — Staging lineage:**
 
 Visual step-by-step in Catalog Explorer:
 
-1. Navigate to **Catalog** → `DEMO` → `STAGING_AZURESTORAGE` → `order_header` → **Lineage** tab.
+1. Navigate to **Catalog** → `DEMO` → `STAGING_AZURESTORAGE` → `STG_ORDER_HEADER` → **Lineage** tab.
 2. The upstream node is the parquet volume path `/Volumes/demo/staging_azurestorage/parquet`.
 
 Programmatic check:
@@ -814,17 +844,17 @@ Programmatic check:
 ```sql
 SELECT source_table_full_name, target_table_full_name, entity_type
 FROM   system.lineage.table_lineage
-WHERE  LOWER(target_table_full_name) = 'demo.staging_azurestorage.order_header'
+WHERE  LOWER(target_table_full_name) = 'demo.staging_azurestorage.stg_order_header'
 ORDER  BY created_at DESC;
 ```
 
-**Section 3 — Silver lineage:**
+**Section 3 — Integration lineage:**
 
 Visual:
 
-1. Navigate to `DEMO` → `INTEGRATION` → `sales_line` → **Lineage** tab.
-2. Two upstream nodes: `INTEGRATION.order_header` and `INTEGRATION.order_detail`.
-3. Click the **Column lineage** tab. Select column `order_total`. Trace it back to `order_header.order_total` in Bronze.
+1. Navigate to `DEMO` → `INTEGRATION` → `SALES_LINE` → **Lineage** tab.
+2. Two upstream nodes: `INTEGRATION.DWH_ORDER_HEADER` and `INTEGRATION.DWH_ORDER_DETAIL`.
+3. Click the **Column lineage** tab. Select column `order_total`. Trace it back through `DWH_ORDER_HEADER.order_total` → `DW_ORDER_HEADER.order_total` → `STG_ORDER_HEADER.ORDER_TOTAL`.
 
 Programmatic check:
 
@@ -834,31 +864,31 @@ FROM   system.lineage.table_lineage
 WHERE  LOWER(target_table_full_name) = 'demo.integration.sales_line';
 ```
 
-**Section 4 — Gold lineage (aggregates):**
+**Section 4 — Datamart lineage (fact):**
 
-Navigate to `DEMO` → `DATAMART` → `daily_sales_by_truck` → **Lineage** tab. One upstream node: `INTEGRATION.order_header`.
+Navigate to `DEMO` → `DATAMART` → `FCT_ORDER` → **Lineage** tab. One upstream node: `INTEGRATION.DWH_ORDER_HEADER`.
 
-**Section 5 — Gold lineage (wide table, full chain):**
+**Section 5 — Datamart lineage (line-grain fact, full chain):**
 
-Navigate to `DEMO` → `DATAMART` → `sales_lines_wide` → **Lineage** tab. Trace the full chain:
+Navigate to `DEMO` → `DATAMART` → `FCT_SALES_LINE` → **Lineage** tab. Trace the full chain:
 
 ```
-parquet files → order_header (Bronze) → order_header (Silver)
-                                                         ↘
-                                                          sales_line (Silver MV)
-parquet files → order_detail (Bronze) → order_detail (Silver)       ↓
-                                                          sales_lines_wide (Gold)
+parquet files → STG_ORDER_HEADER (staging) → DW_ORDER_HEADER → DWH_ORDER_HEADER
+                                                                          ↘
+                                                                           SALES_LINE (integration view)
+parquet files → STG_ORDER_DETAIL (staging) → DW_ORDER_DETAIL → DWH_ORDER_DETAIL   ↓
+                                                                           FCT_SALES_LINE (datamart MV)
 ```
 
 **Section 6 — Programmatic lineage + impact analysis:**
 
-The notebook runs a recursive CTE to show the full downstream chain from `STAGING_AZURESTORAGE.order_header`:
+The notebook runs a recursive CTE to show the full downstream chain from `STAGING_AZURESTORAGE.STG_ORDER_HEADER`:
 
 ```sql
--- Which tables are affected if I change STAGING_AZURESTORAGE.order_header?
+-- Which tables are affected if I change STAGING_AZURESTORAGE.STG_ORDER_HEADER?
 SELECT DISTINCT target_table_full_name
 FROM   system.lineage.table_lineage
-WHERE  LOWER(source_table_full_name) = 'demo.staging_azurestorage.order_header';
+WHERE  LOWER(source_table_full_name) = 'demo.staging_azurestorage.stg_order_header';
 ```
 
 **Section 7 — Governance narrative:**
@@ -867,14 +897,14 @@ Summarises the four lineage use cases: impact analysis, debugging, compliance, a
 
 ### Expected observation
 
-- The Catalog Explorer Lineage tab shows the medallion chain visually: parquet → Bronze → Silver → Gold.
-- Column-level lineage traces `order_total` from Gold back to the Bronze source column.
-- The recursive CTE query returns all downstream tables for a given Bronze table.
+- The Catalog Explorer Lineage tab shows the chain visually: parquet → staging → integration (DW_ → DWH_) → datamart.
+- Column-level lineage traces `order_total` from the datamart fact back to the staging source column.
+- The recursive CTE query returns all downstream tables for a given staging table.
 - All lineage was captured automatically — no manual registration, API calls, or annotations were made.
 
 ### Talking points
 
-> "Unity Catalog captures lineage automatically — from raw parquet files all the way through to Gold KPI aggregates and dashboards. Column-level lineage means you can trace any metric in a dashboard back to its exact source column in the raw data. No separate data catalog product required."
+> "Unity Catalog captures lineage automatically — from raw parquet files all the way through staging, integration (`DW_` history → `DWH_` projection), and datamart (`FCT_`, `DIM_`). Column-level lineage means you can trace any metric in a dashboard back to its exact source column in the raw data. No separate data catalog product required."
 
 ---
 
@@ -896,14 +926,14 @@ AND    target_table  = 'order_header';
 ### CDF inspection
 
 ```sql
--- See recent change events on a Bronze table
+-- See recent change events on a staging table
 SELECT _change_type, _commit_version, order_id, order_total
-FROM   table_changes('DEMO.STAGING_AZURESTORAGE.order_header', 1)
+FROM   table_changes('DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER', 1)
 ORDER  BY _commit_version DESC
 LIMIT  20;
 
 -- Confirm CDF is enabled
-SHOW TBLPROPERTIES DEMO.STAGING_AZURESTORAGE.order_header;
+SHOW TBLPROPERTIES DEMO.STAGING_AZURESTORAGE.STG_ORDER_HEADER;
 ```
 
 ### Quarantine triage
@@ -911,46 +941,64 @@ SHOW TBLPROPERTIES DEMO.STAGING_AZURESTORAGE.order_header;
 ```sql
 -- All quarantine rows for order_header
 SELECT order_id, order_total, failed_rules
-FROM   DEMO.INTEGRATION.order_header_quarantine
+FROM   DEMO.INTEGRATION.DWQ_ORDER_HEADER
 ORDER  BY order_id DESC
 LIMIT  20;
 
 -- Filter by specific failed rule
 SELECT order_id, order_total, failed_rules
-FROM   DEMO.INTEGRATION.order_header_quarantine
+FROM   DEMO.INTEGRATION.DWQ_ORDER_HEADER
 WHERE  array_contains(failed_rules, 'order_total_non_negative');
 
 -- Detail quarantine
 SELECT order_detail_id, quantity, failed_rules
-FROM   DEMO.INTEGRATION.order_detail_quarantine
+FROM   DEMO.INTEGRATION.DWQ_ORDER_DETAIL
 WHERE  array_contains(failed_rules, 'quantity_positive');
 ```
 
-### Silver integration view
+### SCD2 history inspection
+
+```sql
+-- All versions of an order, including end-dated rows
+SELECT order_id, order_total, WA_FROMDATE, WA_UNTODATE, WA_ISCURR
+FROM   DEMO.INTEGRATION.DW_ORDER_HEADER
+WHERE  order_id = <order_id>
+ORDER  BY WA_FROMDATE;
+
+-- Current view of the same order (one row per BK)
+SELECT order_id, order_total, WKP_ORDER_HEADER, WKR_ORDER_HEADER
+FROM   DEMO.INTEGRATION.DWH_ORDER_HEADER
+WHERE  order_id = <order_id>;
+```
+
+### Integration view
 
 ```sql
 SELECT order_detail_id, order_id, menu_item_id, quantity, order_total, truck_id, order_ts
-FROM   DEMO.INTEGRATION.sales_line
+FROM   DEMO.INTEGRATION.SALES_LINE
 LIMIT  10;
 ```
 
-### Gold KPIs
+### Datamart facts + dims
 
 ```sql
--- Top trucks by revenue
-SELECT truck_id, SUM(total_revenue) AS revenue
-FROM   DEMO.DATAMART.daily_sales_by_truck
-GROUP  BY truck_id
+-- Top trucks by revenue (join fact to SCD1 dim)
+SELECT t.truck_id, t.truck_brand_name, SUM(f.order_total) AS revenue
+FROM   DEMO.DATAMART.FCT_ORDER f
+JOIN   DEMO.DATAMART.DIM_TRUCK t ON f.MK_TRUCK = t.MK_TRUCK
+GROUP  BY t.truck_id, t.truck_brand_name
 ORDER  BY revenue DESC
 LIMIT  10;
 
--- Monthly trend
-SELECT year_month, order_currency, total_revenue
-FROM   DEMO.DATAMART.monthly_revenue_by_currency
-ORDER  BY year_month DESC, total_revenue DESC;
+-- Monthly trend (join fact to generated DIM_DATE)
+SELECT d.year_month_start, f.MK_CURRENCY, SUM(f.order_total) AS revenue
+FROM   DEMO.DATAMART.FCT_ORDER f
+JOIN   DEMO.DATAMART.DIM_DATE  d ON f.MK_DATE = d.MK_DATE
+GROUP  BY d.year_month_start, f.MK_CURRENCY
+ORDER  BY d.year_month_start DESC, revenue DESC;
 
--- Liquid Clustering keys
-SHOW TBLPROPERTIES DEMO.DATAMART.sales_lines_wide;
+-- Liquid Clustering keys on FCT_SALES_LINE
+SHOW TBLPROPERTIES DEMO.DATAMART.FCT_SALES_LINE;
 ```
 
 ### Delta Time Travel
@@ -969,15 +1017,15 @@ SELECT * FROM DEMO.CONFIG.pipeline_sources TIMESTAMP AS OF '2024-06-01 12:00:00'
 ### Lineage (programmatic)
 
 ```sql
--- Downstream impact from Bronze order_header
+-- Downstream impact from staging order_header
 SELECT DISTINCT target_table_full_name
 FROM   system.lineage.table_lineage
-WHERE  LOWER(source_table_full_name) = 'demo.staging_azurestorage.order_header';
+WHERE  LOWER(source_table_full_name) = 'demo.staging_azurestorage.stg_order_header';
 
--- Upstream trace for Gold wide table
+-- Upstream trace for line-grain fact
 SELECT source_table_full_name, target_table_full_name
 FROM   system.lineage.table_lineage
-WHERE  LOWER(target_table_full_name) = 'demo.datamart.sales_lines_wide';
+WHERE  LOWER(target_table_full_name) = 'demo.datamart.fct_sales_line';
 ```
 
 ---
@@ -987,9 +1035,10 @@ WHERE  LOWER(target_table_full_name) = 'demo.datamart.sales_lines_wide';
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `ingest_azurestorage_incremental` task skips all tables | All rows in control table have `load_type='full'` | Segment 3: run the `UPDATE` to switch at least one row to `incremental` |
-| Silver pipeline halts with "FAIL expectation violated" | A row with `order_id IS NULL` or `order_detail_id IS NULL` is in Bronze | Delete the bad row from Bronze and re-trigger the pipeline |
+| Integration pipeline halts with "FAIL expectation violated" | A row with `order_id IS NULL` or `order_detail_id IS NULL` is in staging | Delete the bad row from staging and re-trigger the pipeline |
 | `system.access.audit` not found | System Tables not enabled | Account Console → Metastore → System schemas → enable `access` |
 | `system.lineage.table_lineage` not found | Lineage System Tables not enabled | Account Console → Metastore → System schemas → enable `lineage` |
-| Genie space not showing `sales_lines_wide` | Gold pipeline has not run | Run the full workflow first; wait for `dlt_datamart` to complete |
-| Dashboard shows empty widgets | Gold tables empty or warehouse not running | Start the SQL warehouse; run the full workflow |
-| `table_changes()` returns empty | CDF was not enabled at table creation time | The setup notebook creates Bronze tables with CDF enabled; if tables were created manually, run `ALTER TABLE ... SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')` |
+| Genie space not showing `FCT_SALES_LINE` | Datamart pipeline has not run | Run the full workflow first; wait for `dlt_datamart` to complete |
+| Dashboard shows empty widgets | Datamart tables empty or warehouse not running | Start the SQL warehouse; run the full workflow |
+| `table_changes()` returns empty | CDF was not enabled at table creation time | The setup notebook creates staging tables with CDF enabled; if tables were created manually, run `ALTER TABLE ... SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')` |
+| `MK_<NAAM>` join to `DIM_<NAAM>` returns no rows for one of the BKs | Dim view hasn't refreshed after a new BK appeared in staging | Re-run the `apply_views` task in the workflow; dim views are projections over `DWH_`, so they refresh quickly |
