@@ -1,0 +1,5 @@
+# Pipeline behaviour is metadata-driven, not hardcoded
+
+Which sources are ingested, where they land, how they are loaded, and how they flow to downstream layers is governed by external metadata — control tables, configuration files, or descriptive table properties — never by constants in pipeline code. Adding a new source, switching a table from full to incremental load, or pausing an ingest must be possible by editing metadata alone, with the pipeline code unchanged. This follows the KRM "Meta data gedreven" principle and justifies the existing `DEMO.CONFIG.pipeline_sources` control table as the canonical pattern: a Delta table whose content steers the pipeline, with Time Travel, Audit Logs and Lineage as a free side effect.
+
+This rule binds **operational** behaviour — which sources are active, in which mode, against which target table. It does **not** extend to structural decisions: what columns an entity has, what its business key is, which FK references it carries. Those live in the DLT SQL that creates the entity; see ADR-0009.

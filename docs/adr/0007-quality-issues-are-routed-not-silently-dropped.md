@@ -1,0 +1,5 @@
+# Quality issues are routed, not silently dropped
+
+Rows that fail a data-quality check are preserved in a durable, queryable form — typically a paired quarantine table that mirrors the cleansed table and records which rule(s) the row failed. Silent drop patterns that delete rows on violation with no audit trail are rejected. This follows the KRM "Data science voorbereid" and "Open informatie" principles: a row dropped silently cannot be re-derived, reconciled, or investigated, which permanently degrades the analytical surface. A cleansed table is allowed to filter rows out of its own result, but only when a paired quarantine path captures the rejected rows with enough context (which rules failed, original column values) to triage them.
+
+The simpler alternative — `ON VIOLATION DROP ROW` (or equivalent) without a quarantine table — was considered and rejected. It is operationally cheaper, but the demo value of being able to *show* a customer why specific rows did not make it into a dashboard is one of the strongest moments of the integration layer, and the loss of forensic evidence is permanent.

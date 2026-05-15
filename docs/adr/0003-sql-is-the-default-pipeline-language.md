@@ -1,0 +1,3 @@
+# SQL is the default language for pipelines and transformations
+
+Pipeline code in this project is written in SQL by default. Python is used only where SQL is genuinely insufficient — orchestration glue, widget handling, dynamic dispatch — never for transformations that SQL can express. This follows the KRM "SQL uitgangspunt" principle: analysts can read and reason about the pipeline, the engine can optimise it declaratively, and the logic stays portable in a future migration off the current platform. PySpark `DataFrame` chains and Scala UDFs were considered for transformation steps and explicitly rejected — they hide intent, fragment review across two languages, and force every change to go through a code path only engineers can read.
