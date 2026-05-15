@@ -118,6 +118,16 @@ Voor Lakeflow Connect-bronnen ontbreken deze kolommen — daar worden `_change_t
 
 ### 2.6 SCD1-formules — zie [ADR-0012](docs/adr/0012-scd1-dim-views-source-from-latest-row.md) voor bindende spec
 
+De eerdere formules uit dit hoofdstuk zijn verwijderd omdat ze door ADR-0012 gecorrigeerd zijn:
+
+| Verouderde formule | Correcte formule (ADR-0012) | Reden |
+|---|---|---|
+| `MK_<NAAM>` ← `WK_<TABEL>` (huidige versie) | `MK_<NAAM>` ← `WKR_<TABEL>` (root surrogaat) | Versie-surrogaat verandert bij elke update; root is stabiel (KRM slide 15) |
+| Bron = `WHERE WA_ISCURR = 1` | Latest row per BK by `WA_FROMDATE` | Ge-deleted entiteiten hebben geen `WA_ISCURR=1`-rij; latest-row-selectie bewaart ze |
+| `MA_CHANGEDATE` = `MAX(WA_CRUDDTS) WHERE WA_CRUD = 'U'` | `MAX(WA_CRUDDTS) FILTER (WHERE WA_CRUD <> 'C')` | Deletes tellen mee als "last changed" (KRM slide 15) |
+
+Zie §5.4 voor het correcte SCD1 view-patroon.
+
 ---
 
 ## 3. Input: YAML structuur — zie ADR-0009 (informationeel)
@@ -227,31 +237,25 @@ run_id = dbutils.widgets.get("run_id")
 
 ### 5.1 Staging — `notebooks/staging/stg_klant.ipynb`
 
-Auto Loader-bron. Voor Lakeflow Connect-bronnen wijken de admin-kolommen af (zie [ADR-0017](docs/adr/0017-lakeflow-connect-staging-tables-do-not-carry-sa-admin-columns.md)).
+Auto Loader-bron. Staging blijft **rauw** — geen kwaliteitsregels, geen `ON VIOLATION DROP ROW` (zie [ADR-0011](docs/adr/0011-quality-failed-rows-route-to-paired-dwq-table.md); afgekeurde rijen worden pas in integration gerouteerd naar `DWQ_`). Voor Lakeflow Connect-bronnen ontbreken `SA_*`-kolommen (zie [ADR-0017](docs/adr/0017-lakeflow-connect-staging-tables-do-not-carry-sa-admin-columns.md)).
 
 **Cell 4 (`%sql`)**:
 ```sql
 %sql
 CREATE OR REFRESH STREAMING TABLE ${c.catalog}.staging_${c.source_system}.STG_KLANT
-(
-  CONSTRAINT valid_klantcode EXPECT (klantcode IS NOT NULL) ON VIOLATION DROP ROW,
-  CONSTRAINT valid_klantnaam EXPECT (klantnaam IS NOT NULL) ON VIOLATION DROP ROW
-)
 TBLPROPERTIES (
   delta.enableChangeDataFeed = 'true'
 )
-COMMENT 'Staging klant — incrementele MERGE op business key klantcode';
+COMMENT 'Staging klant — incrementele Auto Loader, rauw (geen kwaliteitsregels)';
 
--- APPLY CHANGES INTO doet hier een upsert (geen SCD2 in staging)
+-- Auto Loader leest parquet; SA_* admin-kolommen worden door de ingest-notebook toegevoegd
 APPLY CHANGES INTO ${c.catalog}.staging_${c.source_system}.STG_KLANT
 FROM STREAM read_files('/Volumes/${c.catalog}/landing/${c.source_system}/klant/',
                        format => 'parquet')
 KEYS (klantcode)
-SEQUENCE BY ingangsdatum
+SEQUENCE BY SA_CRUDDTS
 COLUMNS klantcode, klantnaam, ingangsdatum,
-        current_timestamp() AS SA_CRUDDTS,
-        '${c.source_system}' AS SA_SRC,
-        '${c.run_id}' AS SA_RUNID
+        SA_CRUDDTS, SA_SRC, SA_RUNID
 STORED AS SCD TYPE 1;
 ```
 
@@ -260,6 +264,8 @@ STORED AS SCD TYPE 1;
 ### 5.2 Integration — `notebooks/integration/dw_klant.ipynb`
 
 Bevat `DW_KLANT` (streaming table met SCD2) én `DWH_KLANT` (view). Bindende mechaniek: [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md). Bij quality-failures route via tagged MV naar `DWQ_KLANT`: [ADR-0011](docs/adr/0011-quality-failed-rows-route-to-paired-dwq-table.md).
+
+> **Let op `WA_CRUDDTS`**: de waarde komt uit `SA_CRUDDTS` (het moment van staging-ingest), **niet** uit `current_timestamp()`. Gebruik van `current_timestamp()` hier zou de integratietijd registreren in plaats van de bron-ingest-tijd, wat een misleidende audit-trail geeft (ADR-0017).
 
 **Cell 3 (`%sql` — DW_KLANT)**:
 ```sql
@@ -275,35 +281,16 @@ CREATE OR REFRESH STREAMING TABLE ${c.catalog}.integration.DW_KLANT
   WA_SRC         STRING,
   WA_RUNID       STRING,
   WA_HASH        STRING,
-  CONSTRAINT valid_bk EXPECT (klantcode IS NOT NULL) ON VIOLATION DROP ROW
+  CONSTRAINT valid_bk EXPECT (klantcode IS NOT NULL) ON VIOLATION FAIL UPDATE
 )
 COMMENT 'Historische laag klant — SCD2 via APPLY CHANGES INTO';
 
--- SCD2 op basis van Staging CDF
+-- SCD2 op basis van Staging CDF; de tagged source MV (klant_src) levert de gefilterde input
 APPLY CHANGES INTO ${c.catalog}.integration.DW_KLANT
-FROM STREAM(
-  SELECT
-    klantcode,
-    klantnaam,
-    ingangsdatum,
-    current_timestamp() AS WA_CRUDDTS,
-    CASE _change_type
-      WHEN 'insert'           THEN 'C'
-      WHEN 'update_postimage' THEN 'U'
-      WHEN 'delete'           THEN 'D'
-    END AS WA_CRUD,
-    '${c.source_system}' AS WA_SRC,
-    '${c.run_id}' AS WA_RUNID,
-    sha2(concat_ws('||', coalesce(klantnaam, ''), coalesce(cast(ingangsdatum as string), '')), 256) AS WA_HASH,
-    _commit_timestamp
-  FROM STREAM table_changes('${c.catalog}.staging_${c.source_system}.STG_KLANT', 0)
-  WHERE _change_type IN ('insert', 'update_postimage', 'delete')
-)
+FROM (SELECT * FROM STREAM(klant_src) WHERE size(failed_rules) = 0)
 KEYS (klantcode)
-APPLY AS DELETE WHEN _change_type = 'delete'
+APPLY AS DELETE WHEN WA_CRUD = 'D'
 SEQUENCE BY _commit_timestamp
-COLUMNS klantcode, klantnaam, ingangsdatum,
-        WA_CRUDDTS, WA_CRUD, WA_SRC, WA_RUNID, WA_HASH
 STORED AS SCD TYPE 2;
 ```
 
@@ -466,7 +453,7 @@ STORED AS SCD TYPE 1;
 - `SEQUENCE BY` = de juiste timestamp (staging-load voor staging; `_commit_timestamp` voor integration uit staging CDF).
 - `STORED AS SCD TYPE 1` voor staging (huidige stand per BK).
 - `STORED AS SCD TYPE 2` voor integration (volledige historie) — zie [ADR-0010](docs/adr/0010-dw-captures-history-via-apply-changes-into.md).
-- `APPLY AS DELETE WHEN _change_type = 'delete'` om source-deletes te honoreren.
+- In integration: `APPLY AS DELETE WHEN WA_CRUD = 'D'` (na mapping in tagged source MV — `_change_type` is al vertaald naar `WA_CRUD` vóór `APPLY CHANGES INTO`).
 
 ### 6.5 Bij iedere DWH-view
 - Voeg verplicht toe: `WA_FROMDATE`, `WA_UNTODATE`, `WA_ISCURR`, `WKP_<TABEL>`, `WKR_<TABEL>`.
@@ -488,20 +475,30 @@ STORED AS SCD TYPE 1;
 
 ```
 .
-├── README.md
 ├── databricks.yml                      # DAB config (multi-env)
-├── CONTEXT.md                          # human-readable entity-inventory (zie ADR-0009)
-├── docs/adr/                           # binding ontwerpbeslissingen (ADR-0001…ADR-0020)
+├── CONTEXT.md                          # domeinbeschrijving + architectuuroverzicht
 ├── naamgeving-en-lagen.md              # ← dit document (cheat-sheet)
-├── integration/                        # DLT-SQL voor DW_/DWH_/DWQ_-entiteiten
-├── datamart/                           # DLT-SQL voor FCT_-tabellen
-├── views/datamart/                     # apply_views: plain UC DIM_-views
-├── resources/
-│   └── demo_workflow.yml               # Workflow over per-layer pipelines (ADR-0020)
-└── notebooks/                          # staging Auto Loader + ondersteunende tasks
-    ├── staging/
-    ├── integration/                    # (legacy/voorbeelden)
-    └── datamart/                       # (legacy/voorbeelden)
+├── docs/adr/                           # bindende ontwerpbeslissingen (ADR-0001…ADR-0020)
+├── config/
+│   └── 00_setup.ipynb                  # catalog/schemas/volume/control table bootstrap
+├── staging/
+│   └── 02_ingest_azurestorage.ipynb    # Auto Loader ingest (mode=full|incremental|both)
+├── integration/                        # DLT-SQL — één .sql per entiteit (glob include)
+│   ├── order_header.sql                # tagged MV + DW_ + DWH_ + DWQ_
+│   └── order_detail.sql
+├── datamart/                           # DLT-SQL — FCT_-tabellen (glob include)
+│   ├── fact_order.sql
+│   └── fact_sales_line.sql
+├── views/                              # Plain UC views (niet-DLT)
+│   ├── 07_apply_views.ipynb            # orchestrator
+│   ├── integration/
+│   │   └── sales_line.ipynb            # SALES_LINE view
+│   └── datamart/
+│       └── dim_*.ipynb                 # 9 DIM_-views (SCD1, calendar)
+└── resources/
+    ├── demo_workflow.yml               # Workflow over per-layer DLT pipelines (ADR-0020)
+    ├── dlt_integration.yml             # DLT pipeline — integration-laag
+    └── dlt_datamart.yml                # DLT pipeline — datamart-laag
 ```
 
 ---
@@ -523,7 +520,7 @@ Nieuwe entiteit (in DLT-SQL — ADR-0009):
 
 Nieuwe FCT_<NAAM>:
 │
-└─▶ Streaming table die DWH_<TABEL> leest en WKR_<REF> projecteert als MK_<NAAM>
+└─▶ Materialised View die DWH_<TABEL> leest en WKR_<REF> projecteert als MK_<NAAM> (ADR-0020)
     Date-dimensie: directe join op yyyymmdd::INT (DIM_DATE — ADR-0018)
     Entiteits-dimensies: temporeel op WA_FROMDATE/WA_UNTODATE
 ```
