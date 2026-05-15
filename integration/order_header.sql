@@ -130,7 +130,7 @@ COMMENT 'Cleansed ORDER_HEADER, SCD2 via AUTO CDC from order_header_src (where s
 FLOW AUTO CDC
 FROM (
   SELECT * EXCEPT (failed_rules, _change_type)
-  FROM STREAM(LIVE.order_header_src)
+  FROM STREAM(${pipeline.catalog}.INTEGRATION.order_header_src)
   WHERE size(failed_rules) = 0
 )
 KEYS (order_id)
@@ -171,7 +171,7 @@ SELECT
   WA_SRC,
   WA_RUNID,
   WA_HASH
-FROM LIVE.DW_ORDER_HEADER;
+FROM ${pipeline.catalog}.INTEGRATION.DW_ORDER_HEADER;
 
 -- ============================================================================
 -- Object 4 — DWQ_ORDER_HEADER streaming table (quarantine, append-only)
@@ -203,5 +203,5 @@ SELECT
   WA_HASH,
   failed_rules,
   _change_type
-FROM STREAM(LIVE.order_header_src)
+FROM STREAM(${pipeline.catalog}.INTEGRATION.order_header_src)
 WHERE size(failed_rules) > 0;
