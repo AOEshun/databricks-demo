@@ -94,7 +94,8 @@ SELECT
   -- CDF metadata (pass-through for downstream FLOW AUTO CDC SEQUENCE BY + DWQ diagnostic)
   _commit_timestamp,
   _change_type
-FROM STREAM table_changes('${pipeline.catalog}.STAGING_AZURESTORAGE.STG_ORDER_HEADER', 1)
+FROM STREAM ${pipeline.catalog}.STAGING_AZURESTORAGE.STG_ORDER_HEADER
+     WITH (readChangeFeed = 'true', startingVersion = 1)
 WHERE _change_type IN ('insert', 'update_postimage', 'delete');
 
 -- ============================================================================
