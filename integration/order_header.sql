@@ -57,7 +57,7 @@ SELECT
   CAST(ORDER_DISCOUNT_AMOUNT  AS DECIMAL(38,4))  AS order_discount_amount,
   CAST(ORDER_TOTAL            AS DECIMAL(38,4))  AS order_total,
   -- WA_* admin (ADR-0017: SA_* → WA_* mapping; WA_CRUD derived from CDF _change_type)
-  current_timestamp() AS WA_CRUDDTS,
+  SA_CRUDDTS AS WA_CRUDDTS,
   CASE _change_type
     WHEN 'insert'           THEN 'C'
     WHEN 'update_postimage' THEN 'U'
