@@ -1,77 +1,208 @@
--- order_header.sql — Cleansed Silver Streaming Table.
+-- order_header.sql — Integration layer for ORDER_HEADER (ADRs 0010, 0011, 0014, 0015, 0016).
 --
--- Pattern:
---   1. order_header_clean_src     : MV with type-fixes + snake_case + drop-rule filter
---   2. order_header               : target Streaming Table with fail + warn Expectations
---   3. APPLY CHANGES FROM SNAPSHOT: declarative MERGE handling both full-overwrite
---                                   and incremental-append modes in Bronze
---
--- Reading from a snapshot (vs CDF) means we don't depend on _change_type metadata;
--- DLT computes the diff between current and previous Bronze snapshots automatically.
+-- Four-object tagged-MV pipeline:
+--   1. order_header_src   — tagged source MV: type-fixes, SA_* → WA_* admin, WA_HASH,
+--                            failed_rules ARRAY<STRING>; per-rule CONSTRAINT EXPECT
+--                            so each drop-rule's violation count surfaces in the DLT
+--                            event log (ADR-0011).
+--   2. DW_ORDER_HEADER    — cleansed SCD2 streaming table populated via
+--                            APPLY CHANGES INTO … STORED AS SCD TYPE 2 from the
+--                            tagged MV filtered to size(failed_rules)=0 (ADR-0010).
+--   3. DWH_ORDER_HEADER   — view exposing every DW version with renamed validity
+--                            columns (WA_FROMDATE/WA_UNTODATE/WA_ISCURR) and
+--                            window-derived WKP_/WKR_ surrogates (ADR-0013).
+--                            No self-side BK hash column (ADR-0014).
+--   4. DWQ_ORDER_HEADER   — append-only quarantine streaming table populated from
+--                            the same tagged MV filtered to size(failed_rules)>0;
+--                            carries failed_rules + raw _change_type (ADR-0011).
 
 -- ============================================================================
--- Step 1 — typed + cleaned source (drop-rule filter applied here)
+-- Object 1 — Tagged source MV (rule logic + admin columns live here)
 -- ============================================================================
-CREATE OR REFRESH MATERIALIZED VIEW order_header_clean_src
-COMMENT 'Type-fixed staging snapshot of order_header with drop-rule filter applied. Source for APPLY CHANGES FROM SNAPSHOT.'
+CREATE OR REFRESH MATERIALIZED VIEW order_header_src (
+  CONSTRAINT order_ts_not_null         EXPECT (NOT array_contains(failed_rules, 'order_ts_not_null')),
+  CONSTRAINT customer_id_not_null      EXPECT (NOT array_contains(failed_rules, 'customer_id_not_null')),
+  CONSTRAINT order_currency_not_null   EXPECT (NOT array_contains(failed_rules, 'order_currency_not_null')),
+  CONSTRAINT order_total_non_negative  EXPECT (NOT array_contains(failed_rules, 'order_total_non_negative')),
+  CONSTRAINT order_amount_non_negative EXPECT (NOT array_contains(failed_rules, 'order_amount_non_negative'))
+)
+COMMENT 'Tagged source MV for ORDER_HEADER: type-fixes + SA_* → WA_* admin + WA_HASH + failed_rules. Feeds DW_ORDER_HEADER (cleansed) and DWQ_ORDER_HEADER (rejected).'
 AS
 SELECT
-  CAST(ORDER_ID    AS DECIMAL(38,0))                                 AS order_id,
-  CAST(TRUCK_ID    AS DECIMAL(38,0))                                 AS truck_id,
-  CAST(LOCATION_ID AS DECIMAL(38,0))                                 AS location_id,
-  CAST(CUSTOMER_ID AS DECIMAL(38,0))                                 AS customer_id,
-  CAST(DISCOUNT_ID AS DECIMAL(38,0))                                 AS discount_id,
-  CAST(SHIFT_ID    AS DECIMAL(38,0))                                 AS shift_id,
-  -- millis-from-midnight → 'HH:mm:ss' string (timezone-safe, no TIMESTAMP_MILLIS)
+  -- BK
+  CAST(ORDER_ID AS BIGINT) AS order_id,
+  -- Business columns (typed)
+  CAST(TRUCK_ID    AS INT)    AS truck_id,
+  CAST(LOCATION_ID AS INT)    AS location_id,
+  CAST(CUSTOMER_ID AS BIGINT) AS customer_id,
+  CAST(DISCOUNT_ID AS INT)    AS discount_id,
+  CAST(SHIFT_ID    AS INT)    AS shift_id,
+  -- Shift times: millis-since-midnight → 'HH:mm:ss' (timezone-safe)
   CONCAT_WS(':',
-    LPAD(CAST(FLOOR( SHIFT_START_TIME / 3600000) AS INT), 2, '0'),
-    LPAD(CAST(FLOOR((SHIFT_START_TIME /   60000) % 60) AS INT), 2, '0'),
-    LPAD(CAST(FLOOR((SHIFT_START_TIME /    1000) % 60) AS INT), 2, '0')
-  )                                                                  AS shift_start_time,
+    LPAD(CAST(FLOOR( SHIFT_START_TIME / 3600000) AS STRING), 2, '0'),
+    LPAD(CAST(FLOOR((SHIFT_START_TIME %  3600000) / 60000) AS STRING), 2, '0'),
+    LPAD(CAST(FLOOR((SHIFT_START_TIME %    60000) /  1000) AS STRING), 2, '0')
+  ) AS shift_start_time,
   CONCAT_WS(':',
-    LPAD(CAST(FLOOR( SHIFT_END_TIME   / 3600000) AS INT), 2, '0'),
-    LPAD(CAST(FLOOR((SHIFT_END_TIME   /   60000) % 60) AS INT), 2, '0'),
-    LPAD(CAST(FLOOR((SHIFT_END_TIME   /    1000) % 60) AS INT), 2, '0')
-  )                                                                  AS shift_end_time,
-  ORDER_CHANNEL                                                      AS order_channel,
-  ORDER_TS                                                           AS order_ts,
-  TO_TIMESTAMP(SERVED_TS, 'yyyy-MM-dd HH:mm:ss')                     AS served_ts,
-  ORDER_CURRENCY                                                     AS order_currency,
-  CAST(ORDER_AMOUNT          AS DECIMAL(38,4))                       AS order_amount,
-  CAST(ORDER_TAX_AMOUNT      AS DECIMAL(38,4))                       AS order_tax_amount,
-  CAST(ORDER_DISCOUNT_AMOUNT AS DECIMAL(38,4))                       AS order_discount_amount,
-  CAST(ORDER_TOTAL           AS DECIMAL(38,4))                       AS order_total,
-  _ingestion_timestamp,
-  _source_system,
-  _source_file,
-  _last_modified,
-  _pipeline_run_id
-FROM ${pipeline.catalog}.STAGING_AZURESTORAGE.order_header
--- Drop-rule filter — rows failing these go to order_header_quarantine
-WHERE ORDER_TS       IS NOT NULL
-  AND CUSTOMER_ID    IS NOT NULL
-  AND ORDER_CURRENCY IS NOT NULL
-  AND CAST(ORDER_TOTAL  AS DECIMAL(38,4)) >= 0
-  AND CAST(ORDER_AMOUNT AS DECIMAL(38,4)) >= 0;
+    LPAD(CAST(FLOOR( SHIFT_END_TIME   / 3600000) AS STRING), 2, '0'),
+    LPAD(CAST(FLOOR((SHIFT_END_TIME   %  3600000) / 60000) AS STRING), 2, '0'),
+    LPAD(CAST(FLOOR((SHIFT_END_TIME   %    60000) /  1000) AS STRING), 2, '0')
+  ) AS shift_end_time,
+  CAST(ORDER_CHANNEL          AS STRING)         AS order_channel,
+  CAST(ORDER_TS               AS TIMESTAMP)      AS order_ts,
+  CAST(SERVED_TS              AS TIMESTAMP)      AS served_ts,
+  CAST(ORDER_CURRENCY         AS STRING)         AS order_currency,
+  CAST(ORDER_AMOUNT           AS DECIMAL(38,4))  AS order_amount,
+  CAST(ORDER_TAX_AMOUNT       AS DECIMAL(38,4))  AS order_tax_amount,
+  CAST(ORDER_DISCOUNT_AMOUNT  AS DECIMAL(38,4))  AS order_discount_amount,
+  CAST(ORDER_TOTAL            AS DECIMAL(38,4))  AS order_total,
+  -- WA_* admin (ADR-0017: SA_* → WA_* mapping; WA_CRUD derived from CDF _change_type)
+  current_timestamp() AS WA_CRUDDTS,
+  CASE _change_type
+    WHEN 'insert'           THEN 'C'
+    WHEN 'update_postimage' THEN 'U'
+    WHEN 'delete'           THEN 'D'
+  END           AS WA_CRUD,
+  SA_SRC        AS WA_SRC,
+  SA_RUNID      AS WA_RUNID,
+  -- Row content signature over all non-BK business columns (ADRs 0015, 0019)
+  SHA2(CONCAT_WS('||',
+    COALESCE(CAST(TRUCK_ID              AS STRING), ''),
+    COALESCE(CAST(LOCATION_ID           AS STRING), ''),
+    COALESCE(CAST(CUSTOMER_ID           AS STRING), ''),
+    COALESCE(CAST(DISCOUNT_ID           AS STRING), ''),
+    COALESCE(CAST(SHIFT_ID              AS STRING), ''),
+    COALESCE(CAST(SHIFT_START_TIME      AS STRING), ''),
+    COALESCE(CAST(SHIFT_END_TIME        AS STRING), ''),
+    COALESCE(CAST(ORDER_CHANNEL         AS STRING), ''),
+    COALESCE(CAST(ORDER_TS              AS STRING), ''),
+    COALESCE(CAST(SERVED_TS             AS STRING), ''),
+    COALESCE(CAST(ORDER_CURRENCY        AS STRING), ''),
+    COALESCE(CAST(ORDER_AMOUNT          AS STRING), ''),
+    COALESCE(CAST(ORDER_TAX_AMOUNT      AS STRING), ''),
+    COALESCE(CAST(ORDER_DISCOUNT_AMOUNT AS STRING), ''),
+    COALESCE(CAST(ORDER_TOTAL           AS STRING), '')
+  ), 256) AS WA_HASH,
+  -- failed_rules — drop-grade rule violations, compact non-null elements only
+  array_compact(array(
+    CASE WHEN ORDER_TS       IS NULL THEN 'order_ts_not_null'         END,
+    CASE WHEN CUSTOMER_ID    IS NULL THEN 'customer_id_not_null'      END,
+    CASE WHEN ORDER_CURRENCY IS NULL THEN 'order_currency_not_null'   END,
+    CASE WHEN ORDER_TOTAL    <  0    THEN 'order_total_non_negative'  END,
+    CASE WHEN ORDER_AMOUNT   <  0    THEN 'order_amount_non_negative' END
+  )) AS failed_rules,
+  -- CDF metadata (pass-through for downstream APPLY CHANGES SEQUENCE BY + DWQ diagnostic)
+  _commit_timestamp,
+  _change_type
+FROM STREAM table_changes('${pipeline.catalog}.STAGING_AZURESTORAGE.STG_ORDER_HEADER', 1)
+WHERE _change_type IN ('insert', 'update_postimage', 'delete');
 
 -- ============================================================================
--- Step 2 — target Streaming Table with fail + warn Expectations
+-- Object 2 — DW_ORDER_HEADER streaming table (cleansed, SCD2)
 -- ============================================================================
-CREATE OR REFRESH STREAMING TABLE order_header (
-  -- fail rule: pipeline halts on violation
-  CONSTRAINT order_id_not_null      EXPECT (order_id IS NOT NULL) ON VIOLATION FAIL UPDATE,
-  -- warn rules: rows stay, violation count appears in DLT event log
-  CONSTRAINT truck_id_not_null      EXPECT (truck_id IS NOT NULL),
-  CONSTRAINT location_id_not_null   EXPECT (location_id IS NOT NULL),
-  CONSTRAINT shift_times_ordered    EXPECT (shift_start_time <= shift_end_time)
+CREATE OR REFRESH STREAMING TABLE DW_ORDER_HEADER (
+  WK_ORDER_HEADER       BIGINT GENERATED ALWAYS AS IDENTITY,
+  order_id              BIGINT,
+  truck_id              INT,
+  location_id           INT,
+  customer_id           BIGINT,
+  discount_id           INT,
+  shift_id              INT,
+  shift_start_time      STRING,
+  shift_end_time        STRING,
+  order_channel         STRING,
+  order_ts              TIMESTAMP,
+  served_ts             TIMESTAMP,
+  order_currency        STRING,
+  order_amount          DECIMAL(38,4),
+  order_tax_amount      DECIMAL(38,4),
+  order_discount_amount DECIMAL(38,4),
+  order_total           DECIMAL(38,4),
+  WA_CRUDDTS            TIMESTAMP,
+  WA_CRUD               STRING,
+  WA_SRC                STRING,
+  WA_RUNID              STRING,
+  WA_HASH               STRING,
+  CONSTRAINT order_id_not_null EXPECT (order_id IS NOT NULL) ON VIOLATION FAIL UPDATE
 )
-COMMENT 'Cleansed order_header: type-fixes + snake_case + drop-filter; warn/fail Expectations enforced on write.'
-TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+COMMENT 'Cleansed ORDER_HEADER, SCD2 via APPLY CHANGES from order_header_src (where size(failed_rules)=0).';
+
+APPLY CHANGES INTO LIVE.DW_ORDER_HEADER
+FROM (
+  SELECT * EXCEPT (failed_rules, _change_type)
+  FROM STREAM(LIVE.order_header_src)
+  WHERE size(failed_rules) = 0
+)
+KEYS (order_id)
+SEQUENCE BY _commit_timestamp
+APPLY AS DELETE WHEN WA_CRUD = 'D'
+COLUMNS * EXCEPT (_commit_timestamp)
+STORED AS SCD TYPE 2;
 
 -- ============================================================================
--- Step 3 — Snapshot-based MERGE (handles full overwrites + incremental appends)
+-- Object 3 — DWH_ORDER_HEADER view (renamed validity columns + WKP_/WKR_)
 -- ============================================================================
-APPLY CHANGES INTO order_header
-FROM SNAPSHOT order_header_clean_src
-KEYS (order_id)
-STORED AS SCD TYPE 1;
+CREATE OR REPLACE VIEW DWH_ORDER_HEADER AS
+SELECT
+  WK_ORDER_HEADER,
+  LAG(WK_ORDER_HEADER)         OVER (PARTITION BY order_id ORDER BY __START_AT) AS WKP_ORDER_HEADER,
+  FIRST_VALUE(WK_ORDER_HEADER) OVER (PARTITION BY order_id ORDER BY __START_AT) AS WKR_ORDER_HEADER,
+  order_id,
+  truck_id,
+  location_id,
+  customer_id,
+  discount_id,
+  shift_id,
+  shift_start_time,
+  shift_end_time,
+  order_channel,
+  order_ts,
+  served_ts,
+  order_currency,
+  order_amount,
+  order_tax_amount,
+  order_discount_amount,
+  order_total,
+  __START_AT                                              AS WA_FROMDATE,
+  COALESCE(__END_AT, TIMESTAMP '9999-12-31 00:00:00')     AS WA_UNTODATE,
+  CASE WHEN __END_AT IS NULL THEN 1 ELSE 0 END            AS WA_ISCURR,
+  WA_CRUDDTS,
+  WA_CRUD,
+  WA_SRC,
+  WA_RUNID,
+  WA_HASH
+FROM LIVE.DW_ORDER_HEADER;
+
+-- ============================================================================
+-- Object 4 — DWQ_ORDER_HEADER streaming table (quarantine, append-only)
+-- ============================================================================
+CREATE OR REFRESH STREAMING TABLE DWQ_ORDER_HEADER
+COMMENT 'Quarantine for ORDER_HEADER rows failing drop-grade rules. failed_rules carries violated rule names.'
+AS
+SELECT
+  order_id,
+  truck_id,
+  location_id,
+  customer_id,
+  discount_id,
+  shift_id,
+  shift_start_time,
+  shift_end_time,
+  order_channel,
+  order_ts,
+  served_ts,
+  order_currency,
+  order_amount,
+  order_tax_amount,
+  order_discount_amount,
+  order_total,
+  WA_CRUDDTS,
+  WA_CRUD,
+  WA_SRC,
+  WA_RUNID,
+  WA_HASH,
+  failed_rules,
+  _change_type
+FROM STREAM(LIVE.order_header_src)
+WHERE size(failed_rules) > 0;
