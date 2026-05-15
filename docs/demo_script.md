@@ -273,7 +273,7 @@ The layer vocabulary used throughout this demo follows KRM:
 
 ### Talking points
 
-> "Change Data Feed is enabled on every staging table automatically. Integration reads the change stream via `APPLY CHANGES INTO ... STORED AS SCD TYPE 2` — every change becomes a new row in `DW_<TABEL>`, with `WA_FROMDATE`/`WA_UNTODATE` validity periods. The `DWH_` projection view exposes just the current version for consumers, while analysts can drop into `DW_` for full history."
+> "Change Data Feed is enabled on every staging table automatically. Integration reads the change stream via `FLOW AUTO CDC ... STORED AS SCD TYPE 2` — every change becomes a new row in `DW_<TABEL>`, with `WA_FROMDATE`/`WA_UNTODATE` validity periods. The `DWH_` projection view exposes just the current version for consumers, while analysts can drop into `DW_` for full history."
 
 ---
 
@@ -291,7 +291,7 @@ The layer vocabulary used throughout this demo follows KRM:
 2. Open the pipeline named **`demo-integration`**.
 3. View the graph. For each entity you should see four nodes:
    - `<entity>_tagged` (Materialised View — computes `failed_rules ARRAY<STRING>` per CDF event, carries `EXPECT (NOT array_contains(failed_rules, '<rule>'))` constraints)
-   - `DW_<TABEL>` (Streaming Table — cleansed history, populated via `APPLY CHANGES INTO ... STORED AS SCD TYPE 2` on `WHERE size(failed_rules) = 0`)
+   - `DW_<TABEL>` (Streaming Table — cleansed history, populated via `FLOW AUTO CDC ... STORED AS SCD TYPE 2` on `WHERE size(failed_rules) = 0`)
    - `DWQ_<TABEL>` (Streaming Table — append-only quarantine, populated on `WHERE size(failed_rules) > 0`)
    - `DWH_<TABEL>` (Materialised View — projection over `DW_<TABEL>`, renames `__START_AT`/`__END_AT` to `WA_FROMDATE`/`WA_UNTODATE`, derives `WA_ISCURR`, computes `WKP_<TABEL>`/`WKR_<TABEL>` surrogates)
 
