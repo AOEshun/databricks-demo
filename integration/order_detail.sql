@@ -32,7 +32,7 @@ SELECT
   CAST(order_item_discount_amount AS DECIMAL(38,4)) AS order_item_discount_amount,
   CAST(line_number AS INT) AS line_number,
   -- WA_* admin
-  current_timestamp() AS WA_CRUDDTS,
+  SA_CRUDDTS AS WA_CRUDDTS,
   CASE _change_type
     WHEN 'insert' THEN 'C'
     WHEN 'update_postimage' THEN 'U'
